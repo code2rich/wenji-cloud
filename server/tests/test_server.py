@@ -385,3 +385,92 @@ def test_list_models_uses_saved_key_only_for_same_endpoint(client, monkeypatch):
     assert client.post("/api/settings/models", headers=AUTH, json={"target": "asr"}).status_code == 502
     presets = client.get("/api/presets", headers=AUTH).json()
     assert all(p["site"].startswith("https://") for p in presets["llm"] + presets["asr"])
+
+
+def _unit(*pairs):
+    """192 维向量：pairs 是 (维度, 数值)，结果归一化。"""
+    v = [0.0] * 192
+    for i, x in pairs:
+        v[i] = x
+    n = sum(x * x for x in v) ** 0.5
+    return [x / n for x in v]
+
+
+def test_pick_spans_prefers_long_clean_turns():
+    from app import voice
+    segs = [{"start_ms": 0, "end_ms": 2000, "speaker": "0"},          # 太短
+            {"start_ms": 3000, "end_ms": 9000, "speaker": "0"},       # 与说话人 1 重叠
+            {"start_ms": 8000, "end_ms": 8500, "speaker": "1"},
+            {"start_ms": 10000, "end_ms": 50000, "speaker": "0"},     # 截到 30 秒
+            {"start_ms": 60000, "end_ms": 64000, "speaker": "0"}]
+    assert voice.pick_spans(segs, "0") == [(10000, 40000), (60000, 64000)]
+
+
+def test_voiceprint_enroll_auto_name_suggest_and_clear(client, tmp_path, monkeypatch):
+    from app import voice
+    wav = tmp_path / "long.wav"
+    subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-f", "lavfi", "-i", "sine=frequency=300:duration=12",
+                    "-ar", "16000", "-ac", "1", str(wav)], check=True)
+    data = wav.read_bytes()
+    turns = [{"start_ms": 0, "end_ms": 5000, "speaker": "0", "text": "第一位说话人在讲预算"},
+             {"start_ms": 5500, "end_ms": 11000, "speaker": "1", "text": "第二位说话人在讲排期"}]
+    monkeypatch.setattr(asr, "funasr", lambda *a: turns)
+    wang, li, other = _unit((0, 1)), _unit((1, 1)), _unit((2, 1))
+    current = {}
+    monkeypatch.setattr(voice, "_embed_clip", lambda url, clip: current[clip.stem.split("-")[0]])
+
+    def transcribe(name, vectors):
+        current.clear()
+        current.update(vectors)
+        rid = upload(client, name, data, chunk=len(data))["recording_id"]
+        run_queue(client)
+        return rid
+
+    def get(rid):
+        return client.get(f"/api/recordings/{rid}", headers=AUTH).json()
+
+    # 1. 声纹库为空：只提取，不命名
+    r1 = transcribe("a.wav", {"0": wang, "1": li})
+    rec = get(r1)
+    assert set(rec["voices"]) == {"0", "1"} and rec["speaker_names"] == {} and rec["voice_matches"]["speakers"] == {}
+    # 这条录音在登记前就处理过，稍后应被回补
+    r0 = transcribe("b.wav", {"0": _unit((0, 1), (1, 0.15)), "1": other})
+    assert get(r0)["speaker_names"] == {}
+
+    # 2. 命名即登记，并回补之前处理过的录音
+    client.patch(f"/api/recordings/{r1}", headers=AUTH, json={"speaker_names": {"0": "王总", "1": "李工"}})
+    assert {p["name"] for p in client.get("/api/voices", headers=AUTH).json()["people"]} == {"王总", "李工"}
+    rec0 = get(r0)
+    assert rec0["speaker_names"] == {"0": "王总"} and rec0["voice_matches"]["speakers"]["0"]["auto"]
+
+    # 3. 新录音：相似度高的自动命名，中等的只给建议，无关的不匹配
+    r2 = transcribe("c.wav", {"0": other, "1": _unit((0, 0.66), (3, 0.75))})   # 与王总相似度约 0.66
+    rec2 = get(r2)
+    assert rec2["speaker_names"] == {}
+    assert rec2["voice_matches"]["speakers"]["1"]["name"] == "王总" and not rec2["voice_matches"]["speakers"]["1"]["auto"]
+    assert "0" not in rec2["voice_matches"]["speakers"]
+    r3 = transcribe("d.wav", {"0": _unit((1, 1), (5, 0.1)), "1": _unit((0, 1), (6, 0.1))})
+    assert get(r3)["speaker_names"] == {"0": "李工", "1": "王总"}
+
+    # 4. 撤销命名会撤销登记，人没有样本后从声纹库消失
+    client.patch(f"/api/recordings/{r1}", headers=AUTH, json={"speaker_names": {"0": "王总"}})
+    client.patch(f"/api/recordings/{r3}", headers=AUTH, json={"speaker_names": {"1": "王总"}})
+    assert [p["name"] for p in client.get("/api/voices", headers=AUTH).json()["people"]] == ["王总"]
+
+    # 5. 单独识别声纹：没有说话人的录音失败，但录音状态不变
+    monkeypatch.setattr(asr, "funasr", lambda *a: [{"start_ms": 0, "end_ms": 5000, "speaker": None, "text": "没有说话人信息"}])
+    r4 = transcribe("e.wav", {})
+    client.post(f"/api/recordings/{r4}/process", headers=AUTH, json={"kind": "voice"})
+    run_queue(client)
+    rec4 = get(r4)
+    assert rec4["status"] == "done" and "没有区分说话人" in rec4["voice_matches"]["error"]
+
+    # 6. 一键清空
+    client.delete("/api/voices", headers=AUTH)
+    assert client.get("/api/voices", headers=AUTH).json()["people"] == [] and get(r1)["voices"] == {}
+
+
+def test_voice_settings_validation(client):
+    r = client.put("/api/settings", headers=AUTH, json={"voice": {"auto": "0.8", "suggest": "0.62"}})
+    assert r.status_code == 200 and r.json()["voice"]["auto"] == 0.8
+    assert client.put("/api/settings", headers=AUTH, json={"voice": {"auto": 0.5, "suggest": 0.6}}).status_code == 400

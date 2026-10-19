@@ -18,7 +18,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import audio, config, library, mcp_server, pipeline, settings
+from . import audio, config, library, mcp_server, pipeline, settings, voice
 from .db import DB, now
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
@@ -292,13 +292,16 @@ def create_app(data_dir: Path | None = None, token: str | None = None, start_wor
             names = {k: v.strip()[:50] for k, v in body.speaker_names.items() if v.strip()}
             db.run("UPDATE recordings SET speaker_names=?, updated_at=? WHERE id=?",
                    (json.dumps(names, ensure_ascii=False), now(), rid))
+            cfg = settings.load(db)
+            if cfg["voice"]["enabled"]:
+                voice.enroll(db, rid, names, cfg["voice"])  # 命名即登记声纹，并重新匹配其他录音
         return recording(rid)
 
     @app.post("/api/recordings/{rid}/process")
     def process(rid: int, body: Process):
         get_rec(rid)
-        if body.kind not in {"full", "summary"}:
-            raise HTTPException(400, "kind 须为 full 或 summary")
+        if body.kind not in {"full", "summary", "voice"}:
+            raise HTTPException(400, "kind 须为 full、summary 或 voice")
         try:
             pipeline.enqueue(db, rid, body.kind)
         except ValueError as e:
@@ -315,6 +318,22 @@ def create_app(data_dir: Path | None = None, token: str | None = None, start_wor
         Path(rec["audio_path"]).unlink(missing_ok=True)
         shutil.rmtree(data_dir / "work" / str(rid), ignore_errors=True)
         return {"ok": True}
+
+    # ── 声纹库 ───────────────────────────────────────────────────
+    @app.get("/api/voices")
+    def voices():
+        return {"people": voice.library(db)}
+
+    @app.delete("/api/voices/{pid}")
+    def delete_voice(pid: int):
+        db.run("DELETE FROM voice_people WHERE id=?", (pid,))
+        voice.rematch_all(db, settings.load(db)["voice"])
+        return {"people": voice.library(db)}
+
+    @app.delete("/api/voices")
+    def clear_voices():
+        voice.clear(db)
+        return {"people": []}
 
     # ── 设置 ─────────────────────────────────────────────────────
     @app.get("/api/settings")

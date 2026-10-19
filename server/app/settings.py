@@ -35,6 +35,12 @@ DEFAULTS = {
         "prompt": "",                            # 留空使用默认纪要模板
         "mindmap": True,                         # 纪要之后再生成脑图
     },
+    "voice": {
+        "enabled": True,                         # 转写后提取声纹并与声纹库比对（需要 asr-worker）
+        "auto": 0.75,                            # 相似度达到这个值直接命名
+        "suggest": 0.6,                          # 达到这个值给出建议，由用户确认
+        "margin": 0.08,                          # 最像的人须比第二像的人高出这么多，避免认错
+    },
     "hotwords": [],                              # ["闻记", "会议纪要"]；FunASR 热词不支持权重
     "corrections": [],                           # [{"from": "文记", "to": "闻记"}]
 }
@@ -105,7 +111,7 @@ def _endpoint(value: str) -> str:
 
 def save(db, payload: dict) -> dict:
     cfg = load(db)
-    for section in ("general", "asr", "summary"):
+    for section in ("general", "asr", "summary", "voice"):
         incoming = payload.get(section) or {}
         if not isinstance(incoming, dict):
             raise ValueError("设置格式不正确")
@@ -113,6 +119,11 @@ def save(db, payload: dict) -> dict:
             if key not in incoming:
                 continue
             value = incoming[key]
+            if isinstance(default, float) and not isinstance(value, bool):
+                try:
+                    value = float(value)  # 网页数字输入框提交的是字符串
+                except (TypeError, ValueError):
+                    raise ValueError(f"{section}.{key} 须为数字") from None
             if not isinstance(value, type(default)):
                 raise ValueError(f"{section}.{key} 类型不正确")
             if (section, key) in SECRETS and not value.strip():
@@ -130,6 +141,9 @@ def save(db, payload: dict) -> dict:
     a["funasr_url"] = _endpoint(a["funasr_url"])
     a["openai_base_url"] = _endpoint(a["openai_base_url"])
     s["base_url"] = _endpoint(s["base_url"])
+    v = cfg["voice"]
+    if not (0.3 <= v["suggest"] <= v["auto"] <= 0.99) or not 0 <= v["margin"] <= 0.5:
+        raise ValueError("声纹阈值须满足 0.3 ≤ 建议 ≤ 自动 ≤ 0.99，差距在 0–0.5 之间")
     if len(s["prompt"]) > 32000:
         raise ValueError("提示词过长（最多 32000 字符）")
 

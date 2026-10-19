@@ -309,7 +309,7 @@ async function loadDetail() {
   if (state.current !== id) return;
   const fresh = !state.record || state.record.id !== id;
   state.record = rec;
-  const signature = JSON.stringify([rec.status, rec.busy, rec.job, rec.error, rec.title, rec.speaker_names,
+  const signature = JSON.stringify([rec.status, rec.busy, rec.job, rec.error, rec.title, rec.speaker_names, rec.voices, rec.voice_matches,
     rec.segments.length, rec.summary.length, rec.mindmap.length, rec.duration_s]);
   if (signature === state.signature) {
     updateElapsed();
@@ -331,7 +331,8 @@ function primaryAction(rec) {
 
 function banner(rec) {
   if (rec.busy) {
-    const stage = rec.status === 'transcribing' ? '正在转写' : rec.status === 'summarizing' ? '正在生成纪要和脑图'
+    const stage = rec.job?.kind === 'voice' && rec.job.status === 'running' ? '正在识别声纹'
+      : rec.status === 'transcribing' ? '正在转写' : rec.status === 'summarizing' ? '正在生成纪要和脑图'
       : `排队中${state.queue > 1 ? `（队列中共 ${state.queue} 个任务）` : ''}`;
     const tip = rec.status === 'transcribing' && rec.duration_s
       ? `本地模型约需录音时长的 0.7 倍，这段约 ${fmtDuration(rec.duration_s * 0.7)}` : '可以离开页面，完成后自动更新';
@@ -471,16 +472,51 @@ function renderTab() {
     }
     const total = Object.values(stats).reduce((sum, st) => sum + st.ms, 0) || 1;
     body.innerHTML = `
-      <p class="muted" style="margin-top:0">给说话人命名后，转写、导出和 MCP 查询都会使用新名字。想让纪要也使用新名字，保存后点“重新生成纪要”。</p>
+      ${voiceBanner(rec)}
+      <p class="muted" style="margin-top:0">给说话人命名并保存后，转写、导出和 MCP 查询都会使用新名字，同时登记到声纹库：之后的录音会自动认出这个人，已处理的录音也会回补。想让纪要也用上新名字，保存后点“重新生成纪要”。</p>
       <div class="speakers">${Object.entries(stats).map(([spk, st]) => `
         <div class="speaker-row">
           ${avatar(rec, spk)}
           <span class="spk-info"><strong>说话人 ${Number(spk) + 1}</strong><small>${st.n} 段 · ${fmtDuration(st.ms / 1000)} · ${Math.round(st.ms / total * 100)}%</small>
             <span class="share"><i class="spk-bg-${Number(spk) % 6}" style="width:${(st.ms / total * 100).toFixed(1)}%"></i></span></span>
-          <input data-spk="${esc(spk)}" value="${esc(rec.speaker_names[spk] || '')}" placeholder="输入姓名或角色，如：张三 / 客户">
+          <span class="spk-name">
+            <input data-spk="${esc(spk)}" value="${esc(rec.speaker_names[spk] || '')}" placeholder="输入姓名或角色，如：张三 / 客户">
+            ${voiceTag(rec, spk)}
+          </span>
         </div>`).join('')}</div>
       <div class="tab-tools" style="margin-top:14px"><button class="btn primary" data-act="names">保存命名</button></div>`;
   }
+}
+
+// 说话人页顶部：声纹识别失败的原因，或尚未提取声纹时的入口。
+function voiceBanner(rec) {
+  const error = rec.voice_matches?.error;
+  if (rec.busy && rec.job?.kind === 'voice') return '';
+  if (error) {
+    return `<div class="banner fail" style="margin:0 0 14px"><svg><use href="#i-alert"/></svg><div class="grow"><strong>声纹识别失败</strong>
+      <small>${esc(error)}</small></div><button class="btn small" data-act="voice">重试</button></div>`;
+  }
+  if (!Object.keys(rec.voices || {}).length) {
+    return `<div class="banner idle" style="margin:0 0 14px"><svg><use href="#i-wave"/></svg><div class="grow"><strong>还没有提取声纹</strong>
+      <small>提取后与声纹库比对，自动认出说过话的人；需要本地 asr-worker</small></div>
+      <button class="btn small" data-act="voice" ${rec.busy ? 'disabled' : ''}>识别声纹</button></div>`;
+  }
+  return '';
+}
+
+// 每位说话人的声纹状态：已自动识别 / 建议 / 片段不足。
+function voiceTag(rec, spk) {
+  const voices = rec.voices || {};
+  if (!Object.keys(voices).length) return '';
+  if (!(spk in voices)) return '<span class="vtag muted" title="没有 3 秒以上、不与他人重叠的单人片段">声纹片段不足</span>';
+  const m = rec.voice_matches?.speakers?.[spk];
+  if (!m) return '<span class="vtag muted">声纹库中没有匹配的人</span>';
+  const pct = `${Math.round(m.score * 100)}%`;
+  if (rec.speaker_names[spk] === m.name) {
+    return `<span class="vtag ok" title="与声纹库中「${esc(m.name)}」的相似度"><svg><use href="#i-wave"/></svg>声纹识别 · ${pct}</span>`;
+  }
+  return `<button class="vtag suggest" data-act="adopt" data-spk="${esc(spk)}" data-name="${esc(m.name)}"
+    title="相似度 ${pct}，点击填入">可能是 ${esc(m.name)} · ${pct} · 采用</button>`;
 }
 
 function renderSegments() {
@@ -679,6 +715,18 @@ const actions = {
     state.signature = '';
     await loadDetail();
   },
+  adopt(el) {
+    const input = $(`[data-spk="${CSS.escape(el.dataset.spk)}"]`);
+    input.value = el.dataset.name;
+    input.focus();
+    toast('已填入，点“保存命名”生效');
+  },
+  async voice() {
+    await api(`/api/recordings/${state.record.id}/process`, { method: 'POST', body: { kind: 'voice' } });
+    toast('已开始识别声纹');
+    state.signature = '';
+    await Promise.all([loadList(), loadDetail()]);
+  },
   'copy-summary': () => copy(state.record.summary, '纪要'),
   'copy-transcript': () => copy(transcriptText(state.record), '转写'),
   export() {
@@ -820,7 +868,7 @@ async function loadSettings() {
     }
   }
   const cfg = await api('/api/settings');
-  for (const section of ['general', 'asr', 'summary']) {
+  for (const section of ['general', 'asr', 'summary', 'voice']) {
     for (const [key, value] of Object.entries(cfg[section])) {
       const input = field(`${section}.${key}`);
       if (!input) continue;
@@ -840,10 +888,37 @@ async function loadSettings() {
   syncPreset('asr');
   syncPreset('llm');
   $('#settings-msg').textContent = '';
+  await loadVoices();
 }
 
+async function loadVoices(data) {
+  const { people } = data || await api('/api/voices');
+  $('#voice-lib').innerHTML = people.length ? `
+    <div class="voice-list">${people.map(p => `
+      <div class="voice-person"><span class="avatar spk-bg-${p.id % 6}">${esc([...p.name][0])}</span>
+        <span class="grow"><strong>${esc(p.name)}</strong><small>${p.samples} 份样本 · 约 ${fmtDuration(p.seconds)}</small></span>
+        <button type="button" class="btn ghost small" data-voice-del="${p.id}" title="从声纹库删除">删除</button></div>`).join('')}
+    </div>
+    <div class="test-row"><button type="button" class="btn small danger" data-voice-clear>清空声纹库</button>
+      <span class="hint">同时删除每条录音提取的声纹和识别结果，已填写的姓名保留</span></div>`
+    : '<p class="hint">声纹库还是空的。在录音的“说话人”页给说话人命名并保存，就会登记到这里。</p>';
+}
+
+$('#voice-lib').addEventListener('click', run(async event => {
+  const del = event.target.closest('[data-voice-del]');
+  if (del) {
+    if (!confirm('从声纹库删除这个人？之后的录音不会再自动认出他。')) return;
+    await loadVoices(await api(`/api/voices/${del.dataset.voiceDel}`, { method: 'DELETE' }));
+    toast('已删除');
+  } else if (event.target.closest('[data-voice-clear]')) {
+    if (!confirm('清空整个声纹库？所有人的声纹样本和每条录音的声纹都会删除，无法恢复。')) return;
+    await loadVoices(await api('/api/voices', { method: 'DELETE' }));
+    toast('已清空声纹库');
+  }
+}));
+
 function collectSettings() {
-  const body = { general: {}, asr: {}, summary: {} };
+  const body = { general: {}, asr: {}, summary: {}, voice: {} };
   for (const input of form.querySelectorAll('[name*="."]')) {
     if (input.type === 'radio' && !input.checked) continue;
     const [section, key] = input.name.split('.');

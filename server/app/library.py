@@ -51,6 +51,9 @@ def get(db: DB, rid: int) -> dict | None:
     rec = db.one("SELECT * FROM recordings WHERE id=?", (rid,))
     if rec:
         rec["speaker_names"] = json.loads(rec["speaker_names"])
+        rec["voice_matches"] = json.loads(rec["voice_matches"])
+        rec["voices"] = {v["speaker"]: v["seconds"] for v in db.all(
+            "SELECT speaker, seconds FROM recording_voices WHERE recording_id=?", (rid,))}
         rec["job"] = db.one("SELECT kind, status, created_at, updated_at FROM jobs WHERE recording_id=? "
                             "AND status IN ('queued','running') ORDER BY id LIMIT 1", (rid,))
         rec["busy"] = rec["job"] is not None

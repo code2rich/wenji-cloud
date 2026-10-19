@@ -415,6 +415,23 @@ mark { background: color-mix(in srgb, #ffd43b 55%, transparent); color: inherit;
   padding: 16px 0 20px; background: linear-gradient(transparent, var(--bg) 40%); }
 .save-bar .btn.primary { height: 38px; padding: 0 20px; }
 
+/* 声纹 */
+.spk-name { display: grid; gap: 6px; min-width: 0; }
+.vtag { justify-self: start; display: inline-flex; align-items: center; gap: 5px; height: 22px; padding: 0 9px; border-radius: 99px;
+  font-size: 11.5px; font-weight: 560; border: 0; white-space: nowrap; }
+.vtag svg { width: 12px; height: 12px; }
+.vtag.ok { color: var(--ok); background: var(--ok-soft); }
+.vtag.muted { color: var(--muted); background: var(--panel-2); font-weight: 500; }
+.vtag.suggest { color: var(--accent); background: var(--accent-soft); cursor: pointer; box-shadow: inset 0 0 0 1px var(--accent-ring); }
+.vtag.suggest:hover { background: color-mix(in srgb, var(--accent-soft) 60%, var(--accent-ring)); }
+.grid-3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; }
+h3.sub { font-size: 13px; font-weight: 600; margin: 4px 0 10px; }
+.voice-list { display: grid; gap: 8px; }
+.voice-person { display: flex; align-items: center; gap: 12px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 12px; }
+.voice-person .grow { flex: 1; min-width: 0; display: grid; }
+.voice-person strong { font-weight: 600; }
+.voice-person small { color: var(--muted); font-size: 12px; }
+
 /* ── 接入说明 ─────────────────────────────────────────── */
 .doc .lead { margin: 0 0 18px; line-height: 1.7; }
 .doc p, .doc li { line-height: 1.75; font-size: 13.5px; }
@@ -479,7 +496,7 @@ mark { background: color-mix(in srgb, #ffd43b 55%, transparent); color: inherit;
   .detail-inner { padding: 12px 16px 48px; }
   .detail-head { flex-direction: column; gap: 12px; }
   .title-input { font-size: 21px; }
-  .segmented, .grid-2 { grid-template-columns: 1fr; }
+  .segmented, .grid-2, .grid-3 { grid-template-columns: 1fr; }
   .settings { padding: 0 16px 16px; }
   .card { padding: 18px; }
   .paper { padding: 20px 18px; border-radius: 14px; }
@@ -489,6 +506,6 @@ mark { background: color-mix(in srgb, #ffd43b 55%, transparent); color: inherit;
   .tabs { width: 100%; }
   .tabs button { flex: 1; padding: 0 10px; }
   .speaker-row { grid-template-columns: 40px minmax(0, 1fr); }
-  .speaker-row input { grid-column: 1 / -1; }
+  .speaker-row .spk-name { grid-column: 1 / -1; }
   .toasts { width: calc(100% - 32px); }
 }

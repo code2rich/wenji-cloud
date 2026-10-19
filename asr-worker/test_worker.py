@@ -17,3 +17,29 @@ def test_realign_keeps_original_when_counts_differ():
     raw = {"text": "你好。测试，测试。",
            "sentence_info": [{"start": 0, "end": 1, "spk": 0, "text": "你好测试测试。"}]}
     assert _segments(raw)[0]["text"] == "你好测试测试。"
+
+
+def _write_wav(path, seconds, amplitude):
+    import math
+    import struct
+    import wave
+    with wave.open(str(path), "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(16000)
+        w.writeframes(b"".join(struct.pack("<h", int(amplitude * math.sin(i / 8)))
+                               for i in range(int(16000 * seconds))))
+
+
+def test_check_clip_rejects_short_and_silent(tmp_path):
+    import pytest
+    from worker import check_clip
+    ok, short, silent = tmp_path / "ok.wav", tmp_path / "short.wav", tmp_path / "silent.wav"
+    _write_wav(ok, 3.5, 3000)
+    _write_wav(short, 1.5, 3000)
+    _write_wav(silent, 4, 5)
+    check_clip(str(ok))
+    with pytest.raises(ValueError, match="不足"):
+        check_clip(str(short))
+    with pytest.raises(ValueError, match="静音"):
+        check_clip(str(silent))

@@ -1,4 +1,4 @@
-"""SQLite 存储：录音、上传会话、转写分段、任务队列、设置。"""
+"""SQLite 存储：录音、上传会话、转写分段、任务队列、设置、声纹库。"""
 from __future__ import annotations
 
 import json
@@ -25,6 +25,7 @@ CREATE TABLE IF NOT EXISTS recordings (
     mindmap TEXT NOT NULL DEFAULT '',  -- Markdown 大纲，markmap 等工具可直接渲染
     asr_provider TEXT NOT NULL DEFAULT '',
     summary_model TEXT NOT NULL DEFAULT '',
+    voice_matches TEXT NOT NULL DEFAULT '{}',  -- 声纹匹配结果，见 voice.py
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
     UNIQUE (name, size)
@@ -49,7 +50,7 @@ CREATE TABLE IF NOT EXISTS segments (
 CREATE TABLE IF NOT EXISTS jobs (
     id INTEGER PRIMARY KEY,
     recording_id INTEGER NOT NULL REFERENCES recordings(id) ON DELETE CASCADE,
-    kind TEXT NOT NULL,              -- full / summary
+    kind TEXT NOT NULL,              -- full / summary / voice
     status TEXT NOT NULL,            -- queued / running / done / failed
     error TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL,
@@ -58,6 +59,29 @@ CREATE TABLE IF NOT EXISTS jobs (
 -- 列表页每条录音都要查是否有排队/进行中的任务，jobs 只增不删，需要索引。
 CREATE INDEX IF NOT EXISTS jobs_recording ON jobs(recording_id, status);
 CREATE INDEX IF NOT EXISTS jobs_status ON jobs(status);
+-- 声纹库：用户给说话人命名后登记的人和样本。声纹是生物特征，只存在本机。
+CREATE TABLE IF NOT EXISTS voice_people (
+    id INTEGER PRIMARY KEY,
+    name TEXT NOT NULL UNIQUE,
+    created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS voice_samples (
+    id INTEGER PRIMARY KEY,
+    person_id INTEGER NOT NULL REFERENCES voice_people(id) ON DELETE CASCADE,
+    recording_id INTEGER REFERENCES recordings(id) ON DELETE SET NULL,
+    speaker TEXT,
+    embedding TEXT NOT NULL,         -- 192 维单位向量（JSON）
+    seconds REAL NOT NULL,
+    created_at TEXT NOT NULL
+);
+-- 每条录音里每位说话人的声纹，转写后提取，用于登记和匹配。
+CREATE TABLE IF NOT EXISTS recording_voices (
+    recording_id INTEGER NOT NULL REFERENCES recordings(id) ON DELETE CASCADE,
+    speaker TEXT NOT NULL,
+    embedding TEXT NOT NULL,
+    seconds REAL NOT NULL,
+    PRIMARY KEY (recording_id, speaker)
+);
 CREATE TABLE IF NOT EXISTS settings (
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL
@@ -79,6 +103,10 @@ class DB:
             self.conn.execute("PRAGMA journal_mode=WAL")
             self.conn.execute("PRAGMA foreign_keys=ON")
             self.conn.executescript(SCHEMA)
+            # 旧库补列：CREATE TABLE IF NOT EXISTS 不会给已有的表加新列。
+            columns = {r[1] for r in self.conn.execute("PRAGMA table_info(recordings)")}
+            if "voice_matches" not in columns:
+                self.conn.execute("ALTER TABLE recordings ADD COLUMN voice_matches TEXT NOT NULL DEFAULT '{}'")
             # 服务重启时中断的任务重新排队，不丢任务。
             self.conn.execute("UPDATE jobs SET status='queued' WHERE status='running'")
 

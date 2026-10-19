@@ -166,6 +166,21 @@
           </div>
         </section>
 
+        <section class="card">
+          <h2>声纹识别</h2>
+          <div class="fields">
+            <label class="switch-row"><span><strong>转写后自动识别说话人</strong>
+              <small>用本地 asr-worker 提取声纹并与声纹库比对：相似度高的直接填上姓名，中等的只给建议。豆包转写的录音也适用，兼容接口不区分说话人则无法识别。声纹只保存在本服务器。</small></span>
+              <input type="checkbox" name="voice.enabled" class="switch"></label>
+            <div class="grid-3">
+              <label>自动命名阈值<small>相似度达到即直接命名</small><input name="voice.auto" type="number" min="0.3" max="0.99" step="0.01"></label>
+              <label>建议阈值<small>达到即提示“可能是某某”</small><input name="voice.suggest" type="number" min="0.3" max="0.99" step="0.01"></label>
+              <label>领先差距<small>须比第二像的人高出这么多</small><input name="voice.margin" type="number" min="0" max="0.5" step="0.01"></label>
+            </div>
+            <div><h3 class="sub">声纹库</h3><div id="voice-lib"></div></div>
+          </div>
+        </section>
+
         <div class="save-bar">
           <span id="settings-msg" class="muted"></span>
           <button type="submit" class="btn primary">保存设置</button>

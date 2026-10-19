@@ -1,13 +1,15 @@
-"""本地 FunASR 转写服务：POST /transcribe，请求体是 16k 单声道 WAV。
+"""本地 FunASR 转写服务：POST /transcribe 转写，POST /embed 提取声纹；请求体都是 16k 单声道 WAV。
 
 只在 Docker 内网中供 server 调用，不对外暴露端口。
 """
 from __future__ import annotations
 
+import math
 import os
 import re
 import tempfile
 import threading
+import wave
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.concurrency import run_in_threadpool
@@ -18,6 +20,9 @@ PROFILES = {
     "paraformer-zh": ("paraformer-zh", "fsmn-vad", "ct-punc-c", "cam++"),
     "sensevoice": ("SenseVoiceSmall", "fsmn-vad", None, "cam++"),
 }
+
+VOICE_MODEL = "cam++"  # CAM++ 说话人确认模型，输出 192 维声纹，与说话人分离用的是同一个
+MIN_CLIP_S = 3.0      # 太短的片段声纹不稳定
 
 app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
 _models: dict[str, object] = {}
@@ -81,6 +86,44 @@ def _transcribe(path: str, profile: str, hotwords: str) -> list[dict]:
         return _segments(model.generate(path, **kwargs))
 
 
+def check_clip(path: str) -> None:
+    """拒绝过短或接近静音的片段，避免把噪声登记成声纹。"""
+    import numpy as np
+
+    with wave.open(path, "rb") as clip:
+        if clip.getframerate() != 16000 or clip.getnchannels() != 1 or clip.getsampwidth() != 2:
+            raise ValueError("片段须为 16k 单声道 16 位 WAV")
+        # 按实际读到的采样数计时：管道写出的 WAV 头里长度字段可能不准
+        data = np.frombuffer(clip.readframes(clip.getnframes()), dtype="<i2").astype(float)
+    if len(data) / 16000 < MIN_CLIP_S - 0.01:
+        raise ValueError(f"片段不足 {MIN_CLIP_S:.0f} 秒")
+    if float(np.sqrt(np.mean(data ** 2))) < 30:
+        raise ValueError("片段接近静音")
+
+
+def _embed(path: str) -> list[float]:
+    check_clip(path)
+    with _lock:
+        if VOICE_MODEL not in _models:
+            from funasr import AutoModel
+
+            _models[VOICE_MODEL] = AutoModel(model=VOICE_MODEL, device="cpu", ncpu=NCPU, disable_update=True)
+        result = _models[VOICE_MODEL].generate(path)
+    item = result[0] if isinstance(result, list) else result
+    value = item.get("spk_embedding")
+    if value is None:
+        raise ValueError("声纹模型没有返回结果")
+    import numpy as np
+
+    if hasattr(value, "detach"):  # torch.Tensor
+        value = value.detach().cpu().numpy()
+    vector = np.asarray(value, dtype=float).reshape(-1).tolist()
+    norm = math.sqrt(sum(v * v for v in vector))
+    if not norm or not all(math.isfinite(v) for v in vector):
+        raise ValueError("声纹向量无效")
+    return [v / norm for v in vector]
+
+
 @app.get("/healthz")
 def healthz():
     return {"ok": True, "loaded": list(_models)}
@@ -98,3 +141,16 @@ async def transcribe(request: Request, profile: str = "paraformer-zh", hotwords:
             raise HTTPException(400, "请求体为空")
         segments = await run_in_threadpool(_transcribe, tmp.name, profile, hotwords)
     return {"segments": segments}
+
+
+@app.post("/embed")
+async def embed(request: Request):
+    with tempfile.NamedTemporaryFile(suffix=".wav") as tmp:
+        async for chunk in request.stream():
+            tmp.write(chunk)
+        tmp.flush()
+        try:
+            vector = await run_in_threadpool(_embed, tmp.name)
+        except (ValueError, wave.Error, EOFError) as e:
+            raise HTTPException(422, str(e))
+    return {"embedding": vector, "model": VOICE_MODEL}
