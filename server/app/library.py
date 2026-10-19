@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import json
 
-from . import summary
+from . import summary, voice
 from .db import DB
 
 LIST_COLS = ("r.id, r.name, r.size, r.title, r.recorded_at, r.duration_s, r.status, r.error, r.source, "
@@ -52,8 +52,12 @@ def get(db: DB, rid: int) -> dict | None:
     if rec:
         rec["speaker_names"] = json.loads(rec["speaker_names"])
         rec["voice_matches"] = json.loads(rec["voice_matches"])
-        rec["voices"] = {v["speaker"]: v["seconds"] for v in db.all(
-            "SELECT speaker, seconds FROM recording_voices WHERE recording_id=?", (rid,))}
+        voices = db.all("SELECT speaker, seconds, embedding FROM recording_voices WHERE recording_id=?", (rid,))
+        rec["voices"] = {v["speaker"]: v["seconds"] for v in voices}
+        # 说话人两两之间的声纹相似度，合并说话人时用来提示“可能是同一个人”。
+        vectors = {v["speaker"]: json.loads(v["embedding"]) for v in voices}
+        rec["voice_similar"] = {a: {b: round(voice.similarity(va, vb), 3) for b, vb in vectors.items() if b != a}
+                                for a, va in vectors.items()}
         rec["job"] = db.one("SELECT kind, status, created_at, updated_at FROM jobs WHERE recording_id=? "
                             "AND status IN ('queued','running') ORDER BY id LIMIT 1", (rid,))
         rec["busy"] = rec["job"] is not None
@@ -61,7 +65,8 @@ def get(db: DB, rid: int) -> dict | None:
 
 
 def segments(db: DB, rid: int) -> list[dict]:
-    return db.all("SELECT start_ms, end_ms, speaker, text FROM segments WHERE recording_id=? ORDER BY idx", (rid,))
+    return db.all("SELECT idx, start_ms, end_ms, speaker, text, edited FROM segments WHERE recording_id=? ORDER BY idx",
+                  (rid,))
 
 
 def transcript_text(db: DB, rec: dict) -> str:

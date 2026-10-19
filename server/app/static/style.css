@@ -356,6 +356,19 @@ mark { background: color-mix(in srgb, #ffd43b 55%, transparent); color: inherit;
 .seg time:hover { color: var(--accent); background: var(--accent-soft); }
 .seg .who { font-size: 13px; font-weight: 640; }
 .seg p { margin: 2px 0 0; line-height: 1.8; font-size: 14.5px; }
+.seg .edited { font-size: 11px; color: var(--muted); background: var(--panel-2); border-radius: 4px; padding: 0 5px; }
+.seg-edit { margin-left: auto; width: 24px; height: 24px; display: grid; place-items: center; border: 0; border-radius: 6px;
+  background: none; color: var(--muted); cursor: pointer; opacity: 0; transition: opacity .15s; }
+.seg-edit svg { width: 14px; height: 14px; }
+.seg:hover .seg-edit, .seg-edit:focus-visible { opacity: 1; }
+.seg-edit:hover { color: var(--accent); background: var(--accent-soft); }
+@media (hover: none) { .seg-edit { opacity: .6; } }
+.seg.editing { background: var(--hover); }
+.seg-editor { display: grid; gap: 8px; margin-top: 6px; }
+.seg-editor textarea { width: 100%; font-size: 14.5px; line-height: 1.7; }
+.seg-editor-tools { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.seg-editor-tools select { width: auto; height: 28px; font-size: 12.5px; }
+.seg-editor-tools .grow { flex: 1; min-width: 120px; }
 .avatar { width: 32px; height: 32px; border-radius: 50%; display: grid; place-items: center; color: #fff; font-size: 13px; font-weight: 650;
   flex: none; box-shadow: inset 0 0 0 1px rgba(255, 255, 255, .15); }
 .spk-0 { color: var(--spk-0); } .spk-1 { color: var(--spk-1); } .spk-2 { color: var(--spk-2); }
@@ -417,6 +430,8 @@ mark { background: color-mix(in srgb, #ffd43b 55%, transparent); color: inherit;
 
 /* 声纹 */
 .spk-name { display: grid; gap: 6px; min-width: 0; }
+.spk-tools { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; min-height: 22px; }
+.spk-tools .merge { width: auto; height: 24px; font-size: 12px; padding: 0 28px 0 9px; border-radius: 99px; color: var(--muted); }
 .vtag { justify-self: start; display: inline-flex; align-items: center; gap: 5px; height: 22px; padding: 0 9px; border-radius: 99px;
   font-size: 11.5px; font-weight: 560; border: 0; white-space: nowrap; }
 .vtag svg { width: 12px; height: 12px; }
@@ -506,6 +521,8 @@ h3.sub { font-size: 13px; font-weight: 600; margin: 4px 0 10px; }
   .tabs { width: 100%; }
   .tabs button { flex: 1; padding: 0 10px; }
   .speaker-row { grid-template-columns: 40px minmax(0, 1fr); }
+  .seg-editor-tools .hint { display: none; }
+  .seg-editor-tools select { margin-right: auto; }
   .speaker-row .spk-name { grid-column: 1 / -1; }
   .toasts { width: calc(100% - 32px); }
 }

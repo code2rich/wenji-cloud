@@ -15,6 +15,7 @@ const PROVIDERS = { 'funasr:paraformer-zh': '本地 Paraformer', 'funasr:sensevo
 const state = {
   recordings: [], filter: 'all', q: '', current: null, record: null, signature: '',
   tab: 'summary', follow: true, transcriptQuery: '', listSignature: '', queue: 0,
+  editing: null, // 正在修改的转写句（rec.segments 下标）
 };
 
 // ── 工具函数 ──────────────────────────────────────────────────────
@@ -296,6 +297,7 @@ async function openRecord(id) {
     state.record = null;
     state.signature = '';
     state.transcriptQuery = '';
+    state.editing = null;
     renderList();
   }
   document.body.classList.add('show-detail');
@@ -481,11 +483,22 @@ function renderTab() {
             <span class="share"><i class="spk-bg-${Number(spk) % 6}" style="width:${(st.ms / total * 100).toFixed(1)}%"></i></span></span>
           <span class="spk-name">
             <input data-spk="${esc(spk)}" value="${esc(rec.speaker_names[spk] || '')}" placeholder="输入姓名或角色，如：张三 / 客户">
-            ${voiceTag(rec, spk)}
+            <span class="spk-tools">${voiceTag(rec, spk)}${mergeSelect(rec, spk, Object.keys(stats))}</span>
           </span>
         </div>`).join('')}</div>
       <div class="tab-tools" style="margin-top:14px"><button class="btn primary" data-act="names">保存命名</button></div>`;
   }
+}
+
+// 把这位说话人并入另一位：按声纹相似度从高到低排，相似度只作参考。
+function mergeSelect(rec, spk, all) {
+  const others = all.filter(o => o !== spk);
+  if (!others.length || rec.busy) return '';
+  const sim = rec.voice_similar?.[spk] || {};
+  others.sort((a, b) => (sim[b] ?? -1) - (sim[a] ?? -1));
+  return `<select class="merge" data-merge="${esc(spk)}" title="说话人分离把同一个人拆成了几位时，把这位的发言全部并入另一位">
+    <option value="">合并到…</option>${others.map(o => `<option value="${esc(o)}">${esc(speakerName(rec, o))}${
+      o in sim ? ` · 声纹相似 ${Math.round(sim[o] * 100)}%` : ''}</option>`).join('')}</select>`;
 }
 
 // 说话人页顶部：声纹识别失败的原因，或尚未提取声纹时的入口。
@@ -528,14 +541,31 @@ function renderSegments() {
   const rec = state.record;
   const q = state.transcriptQuery;
   const rows = rec.segments.map((s, i) => ({ ...s, i })).filter(s => !q || s.text.includes(q));
+  const draft = $('#seg-text')?.value; // 重新渲染时保留还没保存的修改
   $('#segments').innerHTML = rows.map(s => `
-    <div class="seg${s.speaker === null ? ' anon' : ''}" data-i="${s.i}">
+    <div class="seg${s.speaker === null ? ' anon' : ''}${state.editing === s.i ? ' editing' : ''}" data-i="${s.i}">
       ${s.speaker !== null ? avatar(rec, s.speaker) : ''}
       <div class="seg-body">
         <div class="seg-head">${s.speaker !== null ? `<span class="who spk-${Number(s.speaker) % 6}">${esc(speakerName(rec, s.speaker))}</span>` : ''}
-          <time data-seek="${s.start_ms}" title="从这里播放">${clock(s.start_ms, rec.recorded_at)}</time></div>
-        <p>${highlight(s.text, q)}</p></div>
+          <time data-seek="${s.start_ms}" title="从这里播放">${clock(s.start_ms, rec.recorded_at)}</time>
+          ${s.edited ? '<span class="edited" title="手动修改过；重新转写会覆盖">已修改</span>' : ''}
+          ${state.editing === s.i || rec.busy ? '' : `<button class="seg-edit" data-act="edit-seg" data-seg="${s.i}" title="修改这句"><svg><use href="#i-edit"/></svg></button>`}</div>
+        ${state.editing === s.i ? segEditor(rec, s, draft) : `<p>${highlight(s.text, q)}</p>`}</div>
     </div>`).join('') || `<div class="empty"><strong>没有找到“${esc(q)}”</strong></div>`;
+}
+
+function segEditor(rec, s, draft) {
+  const speakers = [...new Set(rec.segments.map(x => x.speaker).filter(x => x !== null))]
+    .sort((a, b) => Number(a) - Number(b));
+  return `<div class="seg-editor">
+    <textarea id="seg-text" rows="3">${esc(draft ?? s.text)}</textarea>
+    <div class="seg-editor-tools">
+      ${s.speaker !== null && speakers.length > 1 ? `<select id="seg-speaker" title="这句是谁说的">${speakers.map(o =>
+        `<option value="${esc(o)}" ${o === s.speaker ? 'selected' : ''}>${esc(speakerName(rec, o))}</option>`).join('')}</select>` : ''}
+      <span class="hint grow">⌘/Ctrl + Enter 保存 · Esc 取消</span>
+      <button class="btn small" data-act="cancel-seg">取消</button>
+      <button class="btn small primary" data-act="save-seg">保存</button>
+    </div></div>`;
 }
 
 function onTimeUpdate(event) {
@@ -703,7 +733,8 @@ const actions = {
   },
   async full() {
     const rec = state.record;
-    if (rec.segments.length && !confirm('重新转写会覆盖现有转写和说话人命名，确定继续？')) return;
+    const edited = rec.segments.filter(s => s.edited).length;
+    if (rec.segments.length && !confirm(`重新转写会覆盖现有转写和说话人命名${edited ? `，包括手动修改过的 ${edited} 句` : ''}，确定继续？`)) return;
     await api(`/api/recordings/${rec.id}/process`, { method: 'POST', body: { kind: 'full' } });
     toast('已加入处理队列');
     await Promise.all([loadList(), loadDetail()]);
@@ -731,6 +762,28 @@ const actions = {
     toast('已开始识别声纹');
     state.signature = '';
     await Promise.all([loadList(), loadDetail()]);
+  },
+  'edit-seg'(el) {
+    state.editing = Number(el.dataset.seg);
+    renderSegments();
+    const box = $('#seg-text');
+    box.focus();
+    box.setSelectionRange(box.value.length, box.value.length);
+  },
+  'cancel-seg'() {
+    state.editing = null;
+    renderSegments();
+  },
+  async 'save-seg'() {
+    const rec = state.record;
+    const seg = rec.segments[state.editing];
+    const body = { text: $('#seg-text').value };
+    const speaker = $('#seg-speaker')?.value;
+    if (speaker !== undefined && speaker !== seg.speaker) body.speaker = speaker;
+    state.record = await api(`/api/recordings/${rec.id}/segments/${seg.idx}`, { method: 'PATCH', body });
+    state.editing = null;
+    renderSegments();
+    toast(rec.summary ? '已保存；纪要要点“重新生成纪要”才会更新' : '已保存');
   },
   'copy-summary': () => copy(state.record.summary, '纪要'),
   'copy-transcript': () => copy(transcriptText(state.record), '转写'),
@@ -786,6 +839,7 @@ $('#detail').addEventListener('input', event => {
 
 $('#detail').addEventListener('change', run(async event => {
   if (event.target.id === 'follow') state.follow = event.target.checked;
+  if (event.target.dataset.merge !== undefined) return mergeSpeaker(event.target);
   if (event.target.id !== 'title') return;
   const title = event.target.value.trim();
   if (!title || title === displayTitle(state.record)) return;
@@ -796,7 +850,31 @@ $('#detail').addEventListener('change', run(async event => {
 
 $('#detail').addEventListener('keydown', event => {
   if (event.target.id === 'title' && event.key === 'Enter') event.target.blur();
+  if (event.target.id === 'seg-text') {
+    if (event.key === 'Escape') actions['cancel-seg']();
+    if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) {
+      event.preventDefault();
+      run(actions['save-seg'])();
+    }
+  }
 });
+
+async function mergeSpeaker(select) {
+  const rec = state.record;
+  const source = select.dataset.merge, target = select.value;
+  if (!target) return;
+  const dirty = $$('[data-spk]').some(input => input.value.trim() !== (rec.speaker_names[input.dataset.spk] || ''));
+  const n = rec.segments.filter(s => s.speaker === source).length;
+  if (dirty || !confirm(`把「${speakerName(rec, source)}」的 ${n} 句发言并入「${speakerName(rec, target)}」？\n合并后不能一键撤销，可以在转写里逐句改回。`)) {
+    select.value = '';
+    if (dirty) toast('请先保存命名，再合并说话人');
+    return;
+  }
+  state.record = await api(`/api/recordings/${rec.id}/speakers/merge`, { method: 'POST', body: { source, target } });
+  toast(state.record.busy ? '已合并，正在重新提取声纹' : '已合并');
+  state.signature = '';
+  await Promise.all([loadList(), loadDetail()]);
+}
 
 function placeholder() {
   return `<div class="empty hero-empty"><span class="logo xl"><svg><use href="#i-logo"/></svg></span><strong>选择一条录音</strong>查看纪要、脑图和转写 · 按 <kbd>/</kbd> 搜索</div>`;

@@ -314,7 +314,8 @@ def test_requested_summary_without_model_fails_clearly(client, monkeypatch):
     rid = upload(client, "a.wav", b"data")["recording_id"]
     monkeypatch.setattr(pipeline, "transcribe", lambda *a: None)
     run_queue(client)
-    client.db.run("INSERT INTO segments VALUES(?, 0, 0, 1000, '0', '你好')", (rid,))
+    client.db.run("INSERT INTO segments(recording_id, idx, start_ms, end_ms, speaker, text) "
+                  "VALUES(?, 0, 0, 1000, '0', '你好')", (rid,))
     client.post(f"/api/recordings/{rid}/process", headers=AUTH, json={"kind": "summary"})
     run_queue(client)
     rec = client.get(f"/api/recordings/{rid}", headers=AUTH).json()
@@ -517,3 +518,75 @@ def test_voice_settings_validation(client):
     r = client.put("/api/settings", headers=AUTH, json={"voice": {"auto": "0.8", "suggest": "0.62"}})
     assert r.status_code == 200 and r.json()["voice"]["auto"] == 0.8
     assert client.put("/api/settings", headers=AUTH, json={"voice": {"auto": 0.5, "suggest": 0.6}}).status_code == 400
+
+
+def test_edit_segment_text_and_speaker(client, monkeypatch, tmp_path):
+    wav = tmp_path / "x.wav"
+    subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-f", "lavfi", "-i", "sine=frequency=300:duration=6",
+                    "-ar", "16000", "-ac", "1", str(wav)], check=True)
+    monkeypatch.setattr(asr, "funasr", lambda *a: [
+        {"start_ms": 0, "end_ms": 2000, "speaker": "0", "text": "文记很好用"},
+        {"start_ms": 2000, "end_ms": 4000, "speaker": "1", "text": "我也觉得"},
+        {"start_ms": 4000, "end_ms": 6000, "speaker": "0", "text": "这句其实是说话人二说的"}])
+    data = wav.read_bytes()
+    rid = upload(client, "edit.wav", data, chunk=len(data))["recording_id"]
+    run_queue(client)
+    url = f"/api/recordings/{rid}/segments"
+
+    r = client.patch(f"{url}/0", headers=AUTH, json={"text": "  闻记很好用 "})
+    seg = r.json()["segments"][0]
+    assert r.status_code == 200 and seg["text"] == "闻记很好用" and seg["edited"] == 1
+    assert r.json()["segments"][1]["edited"] == 0
+    # 改动进入搜索、MCP 用的转写文本
+    assert client.get("/api/recordings?q=闻记很好用", headers=AUTH).json()["recordings"][0]["id"] == rid
+
+    r = client.patch(f"{url}/2", headers=AUTH, json={"speaker": "1"})
+    assert r.json()["segments"][2]["speaker"] == "1" and r.json()["segments"][2]["text"] == "这句其实是说话人二说的"
+
+    assert client.patch(f"{url}/0", headers=AUTH, json={"text": "   "}).status_code == 400
+    assert client.patch(f"{url}/0", headers=AUTH, json={"speaker": "9"}).status_code == 400
+    assert client.patch(f"{url}/99", headers=AUTH, json={"text": "x"}).status_code == 404
+    # 有任务在排队时不允许修改，避免被转写结果覆盖
+    client.post(f"/api/recordings/{rid}/process", headers=AUTH, json={"kind": "summary"})
+    assert client.patch(f"{url}/0", headers=AUTH, json={"text": "y"}).status_code == 409
+
+
+def test_merge_speakers(client, monkeypatch, tmp_path):
+    from app import voice
+    wav = tmp_path / "m.wav"
+    subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-f", "lavfi", "-i", "sine=frequency=300:duration=40",
+                    "-ar", "16000", "-ac", "1", str(wav)], check=True)
+    monkeypatch.setattr(asr, "funasr", lambda *a: [
+        {"start_ms": 0, "end_ms": 12000, "speaker": "0", "text": "第一段"},
+        {"start_ms": 12000, "end_ms": 24000, "speaker": "1", "text": "第二段"},
+        {"start_ms": 24000, "end_ms": 36000, "speaker": "2", "text": "其实还是第一个人"}])
+    vectors = {"0": _unit((0, 1)), "1": _unit((1, 1)), "2": _unit((0, 1), (2, 0.3))}
+    calls = []
+
+    def embed(url, clip):
+        calls.append(clip.stem)
+        return vectors[clip.stem.split("-")[0]]
+    monkeypatch.setattr(voice, "_embed_clip", embed)
+    data = wav.read_bytes()
+    rid = upload(client, "merge.wav", data, chunk=len(data))["recording_id"]
+    run_queue(client)
+    client.patch(f"/api/recordings/{rid}", headers=AUTH, json={"speaker_names": {"2": "王总"}})
+    rec = client.get(f"/api/recordings/{rid}", headers=AUTH).json()
+    # 声纹相似度提示：说话人 2 最像说话人 0
+    assert rec["voice_similar"]["2"]["0"] > 0.9 > rec["voice_similar"]["2"]["1"]
+
+    url = f"/api/recordings/{rid}/speakers/merge"
+    assert client.post(url, headers=AUTH, json={"source": "2", "target": "2"}).status_code == 400
+    assert client.post(url, headers=AUTH, json={"source": "2", "target": "7"}).status_code == 400
+
+    r = client.post(url, headers=AUTH, json={"source": "2", "target": "0"}).json()
+    assert [s["speaker"] for s in r["segments"]] == ["0", "1", "0"]
+    assert r["speaker_names"] == {"0": "王总"}           # 名字随发言转到目标说话人
+    assert set(r["voices"]) == {"0", "1"} and r["busy"]  # 旧声纹作废，排队重新提取
+    sample = client.db.one("SELECT speaker FROM voice_samples WHERE recording_id=?", (rid,))
+    assert sample["speaker"] == "0"
+    calls.clear()
+    run_queue(client)
+    assert calls and all(c.split("-")[0] in {"0", "1"} for c in calls)
+    rec = client.get(f"/api/recordings/{rid}", headers=AUTH).json()
+    assert rec["status"] == "done" and set(rec["voices"]) == {"0", "1"} and rec["speaker_names"] == {"0": "王总"}

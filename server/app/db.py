@@ -45,6 +45,7 @@ CREATE TABLE IF NOT EXISTS segments (
     end_ms INTEGER NOT NULL,
     speaker TEXT,
     text TEXT NOT NULL,
+    edited INTEGER NOT NULL DEFAULT 0,  -- 用户在网页上改过；重新转写会覆盖
     PRIMARY KEY (recording_id, idx)
 );
 CREATE TABLE IF NOT EXISTS jobs (
@@ -107,6 +108,8 @@ class DB:
             columns = {r[1] for r in self.conn.execute("PRAGMA table_info(recordings)")}
             if "voice_matches" not in columns:
                 self.conn.execute("ALTER TABLE recordings ADD COLUMN voice_matches TEXT NOT NULL DEFAULT '{}'")
+            if "edited" not in {r[1] for r in self.conn.execute("PRAGMA table_info(segments)")}:
+                self.conn.execute("ALTER TABLE segments ADD COLUMN edited INTEGER NOT NULL DEFAULT 0")
             # 服务重启时中断的任务重新排队，不丢任务。
             self.conn.execute("UPDATE jobs SET status='queued' WHERE status='running'")
 

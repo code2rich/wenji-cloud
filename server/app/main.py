@@ -51,6 +51,16 @@ class Patch(BaseModel):
     speaker_names: dict[str, str] | None = None
 
 
+class SegmentEdit(BaseModel):
+    text: str | None = None
+    speaker: str | None = None
+
+
+class Merge(BaseModel):
+    source: str
+    target: str
+
+
 class TestBody(BaseModel):
     target: str
 
@@ -295,6 +305,62 @@ def create_app(data_dir: Path | None = None, token: str | None = None, start_wor
             cfg = settings.load(db)
             if cfg["voice"]["enabled"]:
                 voice.enroll(db, rid, names, cfg["voice"])  # 命名即登记声纹，并重新匹配其他录音
+        return recording(rid)
+
+    def editable(rid: int) -> dict:
+        rec = get_rec(rid)
+        if rec["busy"]:
+            raise HTTPException(409, "录音正在处理，完成后再修改")
+        return rec
+
+    def speakers_of(rid: int) -> set[str]:
+        return {r["speaker"] for r in db.all(
+            "SELECT DISTINCT speaker FROM segments WHERE recording_id=? AND speaker IS NOT NULL", (rid,))}
+
+    @app.patch("/api/recordings/{rid}/segments/{idx}")
+    def edit_segment(rid: int, idx: int, body: SegmentEdit):
+        """修改一句转写的文字，或把这句改记到另一位说话人名下。"""
+        editable(rid)
+        seg = db.one("SELECT speaker, text FROM segments WHERE recording_id=? AND idx=?", (rid, idx))
+        if not seg:
+            raise HTTPException(404, "这句转写不存在")
+        text, speaker = seg["text"], seg["speaker"]
+        if body.text is not None:
+            text = body.text.strip()
+            if not text:
+                raise HTTPException(400, "内容不能为空")
+            if len(text) > 5000:
+                raise HTTPException(400, "一句最多 5000 字")
+        if body.speaker is not None and body.speaker != speaker:
+            if speaker is None or body.speaker not in speakers_of(rid):
+                raise HTTPException(400, "只能改为这条录音里已有的说话人")
+            speaker = body.speaker
+        if (text, speaker) != (seg["text"], seg["speaker"]):
+            with db.tx():
+                db.run("UPDATE segments SET text=?, speaker=?, edited=1 WHERE recording_id=? AND idx=?",
+                       (text, speaker, rid, idx))
+                db.run("UPDATE recordings SET updated_at=? WHERE id=?", (now(), rid))
+        return recording(rid)
+
+    @app.post("/api/recordings/{rid}/speakers/merge")
+    def merge_speakers(rid: int, body: Merge):
+        """把说话人 source 的所有发言并入 target（说话人分离把一个人拆成了几个时用）。"""
+        rec = editable(rid)
+        spks = speakers_of(rid)
+        if body.source == body.target or not {body.source, body.target} <= spks:
+            raise HTTPException(400, "请选择这条录音里两位不同的说话人")
+        names = rec["speaker_names"]
+        if not names.get(body.target) and names.get(body.source):
+            names[body.target] = names[body.source]
+        names.pop(body.source, None)
+        with db.tx():
+            db.run("UPDATE segments SET speaker=? WHERE recording_id=? AND speaker=?", (body.target, rid, body.source))
+            db.run("UPDATE recordings SET speaker_names=?, updated_at=? WHERE id=?",
+                   (json.dumps(names, ensure_ascii=False), now(), rid))
+            had_voices = voice.merge_speakers(db, rid, body.source, body.target)
+        if had_voices and settings.load(db)["voice"]["enabled"]:
+            pipeline.enqueue(db, rid, "voice")  # 用合并后的全部发言重新提取声纹
+            worker.wake.set()
         return recording(rid)
 
     @app.post("/api/recordings/{rid}/process")

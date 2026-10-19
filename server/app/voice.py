@@ -44,6 +44,10 @@ def _dot(a: list[float], b: list[float]) -> float:
     return sum(x * y for x, y in zip(a, b))
 
 
+def similarity(a: list[float], b: list[float]) -> float:
+    return _dot(a, b)
+
+
 def pick_spans(segments: list[dict], speaker: str) -> list[tuple[int, int]]:
     """挑这位说话人最长的几段单人讲话：至少 3 秒、不与其他人重叠，每段最多取 30 秒。"""
     others = [s for s in segments if s["speaker"] is not None and s["speaker"] != speaker]
@@ -185,6 +189,20 @@ def rematch_all(db: DB, cfg: dict, skip: int | None = None) -> None:
     for row in db.all("SELECT DISTINCT recording_id FROM recording_voices"):
         if row["recording_id"] != skip:
             match(db, row["recording_id"], cfg, people)
+
+
+def merge_speakers(db: DB, rid: int, source: str, target: str) -> bool:
+    """说话人 source 并入 target 后整理声纹：source 的声纹和匹配结果作废，已登记的样本改记到 target。
+    返回这条录音是否提取过声纹（需要重新提取合并后的声纹）。"""
+    had = db.one("SELECT 1 FROM recording_voices WHERE recording_id=? LIMIT 1", (rid,)) is not None
+    db.run("DELETE FROM recording_voices WHERE recording_id=? AND speaker=?", (rid, source))
+    db.run("UPDATE voice_samples SET speaker=? WHERE recording_id=? AND speaker=?", (target, rid, source))
+    rec = db.one("SELECT voice_matches FROM recordings WHERE id=?", (rid,))
+    matches = json.loads(rec["voice_matches"])
+    if source in matches.get("speakers", {}):
+        del matches["speakers"][source]
+        db.run("UPDATE recordings SET voice_matches=? WHERE id=?", (json.dumps(matches, ensure_ascii=False), rid))
+    return had
 
 
 def library(db: DB) -> list[dict]:
