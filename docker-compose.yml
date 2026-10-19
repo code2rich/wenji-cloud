@@ -1,0 +1,24 @@
+services:
+  server:
+    build: ./server
+    restart: unless-stopped
+    env_file: .env
+    ports:
+      # 只绑定本机，由内网穿透客户端（frpc / cloudflared 等）转发到这里。
+      - "127.0.0.1:${WENJI_PORT:-8080}:8080"
+    volumes:
+      - ./data:/data
+    extra_hosts:
+      # 访问宿主机上的 Ollama / LM Studio：http://host.docker.internal:11434/v1
+      - "host.docker.internal:host-gateway"
+
+  # 本地转写（FunASR，仅 CPU）。启用：docker compose --profile local-asr up -d
+  asr-worker:
+    build: ./asr-worker
+    profiles: ["local-asr"]
+    restart: unless-stopped
+    environment:
+      ASR_THREADS: ${ASR_THREADS:-8}
+    volumes:
+      - ./models:/models
+    # 不映射端口：只在 Compose 内网中供 server 访问。

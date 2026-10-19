@@ -1,0 +1,30 @@
+{
+  "main": "index.html",
+  "logo": "logo.png",
+  "preload": "preload.js",
+  "pluginSetting": {
+    "single": true,
+    "height": 520
+  },
+  "features": [
+    {
+      "code": "sync",
+      "explain": "把录音卡里的录音同步到闻记",
+      "cmds": ["闻记同步", "录音同步", "wenji"]
+    },
+    {
+      "code": "upload",
+      "explain": "把选中的音频上传到闻记",
+      "cmds": [
+        {
+          "type": "files",
+          "label": "上传到闻记",
+          "fileType": "file",
+          "match": "/\\.(wav|opus|ogg|mp3|m4a|flac|aac|webm|mp4)$/i",
+          "minLength": 1,
+          "maxLength": 50
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,86 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="color-scheme" content="light dark">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <svg width="0" height="0" style="position:absolute" aria-hidden="true">
+    <defs>
+      <symbol id="i-logo" viewBox="0 0 24 24"><g stroke="currentColor" stroke-width="1.9" stroke-linecap="round" fill="none"><path d="M4.5 10.5v3M7.5 7.5v9M10.5 9.5v5"/><path d="M13.5 7.5h6M13.5 10.5h4.5M13.5 13.5h6M13.5 16.5h3" opacity=".85"/></g></symbol>
+      <symbol id="i-card" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"><path d="M7 3h7l4 4v14H7z"/><path d="M10 3v4M12.5 3v4M15 4.5V7"/></g></symbol>
+      <symbol id="i-upload" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 16V4M7 9l5-5 5 5M4 16v3a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-3"/></g></symbol>
+      <symbol id="i-web" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M14 4h6v6M20 4l-9 9M18 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5"/></g></symbol>
+      <symbol id="i-refresh" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M20 11a8 8 0 0 0-14.6-4.5L4 8M4 4v4h4M4 13a8 8 0 0 0 14.6 4.5L20 16M20 20v-4h-4"/></g></symbol>
+      <symbol id="i-check" viewBox="0 0 24 24"><path d="m5 12.5 4.5 4.5L19 7.5" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+    </defs>
+  </svg>
+
+  <header class="top">
+    <div class="brand"><span class="logo"><svg><use href="#i-logo"/></svg></span>闻记</div>
+    <nav class="tabs">
+      <button data-view="sync" class="active">同步</button>
+      <button data-view="log">记录</button>
+      <button data-view="settings">设置</button>
+    </nav>
+    <button id="conn" class="conn" title="点击重新检测"><span class="dot"></span><span id="conn-text">检测中…</span></button>
+    <button id="open-web" class="btn icon" title="打开网页"><svg><use href="#i-web"/></svg></button>
+  </header>
+
+  <!-- 同步 -->
+  <main id="view-sync" class="view">
+    <section id="hero" class="hero"></section>
+    <section id="files-wrap" class="files-wrap" hidden>
+      <div class="files-head">
+        <span id="files-title">卡上录音</span>
+        <button id="recheck" class="btn ghost small" title="重新比对"><svg><use href="#i-refresh"/></svg>重新比对</button>
+      </div>
+      <div id="files" class="files"></div>
+    </section>
+    <section id="recent" class="recent" hidden>
+      <div class="files-head"><span>最近记录</span><button class="btn ghost small" data-view="log">全部记录</button></div>
+      <ul id="recent-list" class="log"></ul>
+    </section>
+  </main>
+
+  <!-- 记录 -->
+  <main id="view-log" class="view" hidden>
+    <ul id="log" class="log"></ul>
+  </main>
+
+  <!-- 设置 -->
+  <main id="view-settings" class="view" hidden>
+    <form id="settings-form" class="settings">
+      <div id="welcome" class="welcome" hidden>
+        <strong>欢迎使用闻记同步</strong>
+        <span>填写部署在 Mac Studio 上的服务地址和令牌，插上录音卡就会自动把新录音同步过去。</span>
+      </div>
+      <label>服务地址<input name="server" placeholder="https://wenji.example.com" spellcheck="false"></label>
+      <div id="servers" class="servers" hidden>
+        <small>已保存的地址：点击切换，当前地址连不上时会自动尝试其他地址。填入新地址并保存即可添加。</small>
+        <div id="server-list" class="server-list"></div>
+      </div>
+      <label>访问令牌<input name="token" type="password" placeholder="服务端 .env 中的 WENJI_TOKEN"></label>
+      <div class="row">
+        <label>上传格式
+          <select name="prefer">
+            <option value="opus">Opus（推荐，体积约为 WAV 的 1/16）</option>
+            <option value="wav">WAV（无损，体积大）</option>
+          </select>
+        </label>
+      </div>
+      <label class="switch-row"><span><strong>插卡后自动同步</strong><small>发现服务端没有的录音时自动上传</small></span><input type="checkbox" name="autoSync" class="switch"></label>
+      <label class="switch-row"><span><strong>同步成功后推出录音卡</strong><small>全部上传成功后自动推出，可直接拔卡</small></span><input type="checkbox" name="ejectAfter" class="switch"></label>
+      <div class="actions">
+        <span id="settings-msg" class="msg"></span>
+        <button type="button" id="test" class="btn">测试连接</button>
+        <button type="submit" class="btn primary">保存</button>
+      </div>
+      <p class="hint">想让插件常驻后台、插卡自动同步：在本插件右上角菜单 →“插件应用设置”，开启“跟随主程序同时启动运行”，关闭“退出到后台立即结束运行”。</p>
+    </form>
+  </main>
+
+  <script src="index.js"></script>
+</body>
+</html>
