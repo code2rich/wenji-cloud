@@ -8,8 +8,17 @@ const CHUNK = 8 * 1024 * 1024; // 远小于内网穿透常见的 100MB 请求体
 const AUDIO_EXTS = new Set(['.wav', '.opus', '.ogg', '.mp3', '.m4a', '.flac', '.aac', '.webm', '.mp4']);
 const SYSTEM_VOLUMES = new Set(['macintosh hd', 'recovery', 'preboot', 'vm', 'update']);
 
-/** /Volumes 下含 record/ 目录的卷视为录音卡。 */
-function findCards(volumesDir = '/Volumes') {
+/**
+ * 列出可能是录音卡的卷：macOS 是 /Volumes 下的各个卷，Windows 是除系统盘外的 D:–Z: 盘符。
+ * 返回 [{ name, root }]，root 是卷的根目录。
+ */
+function volumeRoots(platform = process.platform, volumesDir = '/Volumes') {
+  if (platform === 'win32') {
+    const system = (process.env.SystemDrive || 'C:').toUpperCase();
+    return [...'DEFGHIJKLMNOPQRSTUVWXYZ'].map(letter => `${letter}:`)
+      .filter(drive => drive !== system)
+      .map(drive => ({ name: drive, root: drive + '\\' }));
+  }
   let names;
   try {
     names = fs.readdirSync(volumesDir);
@@ -18,7 +27,13 @@ function findCards(volumesDir = '/Volumes') {
   }
   return names
     .filter(name => !name.startsWith('.') && !SYSTEM_VOLUMES.has(name.toLowerCase()))
-    .map(name => ({ name, dir: path.join(volumesDir, name, 'record') }))
+    .map(name => ({ name, root: path.join(volumesDir, name) }));
+}
+
+/** 含 record/ 目录的卷视为录音卡。 */
+function findCards(volumesDir = '/Volumes', platform = process.platform) {
+  return volumeRoots(platform, volumesDir)
+    .map(v => ({ ...v, dir: path.join(v.root, 'record') }))
     .filter(card => {
       try {
         return fs.statSync(card.dir).isDirectory();
@@ -201,4 +216,4 @@ async function syncFiles({ client, files, source = '', onEvent = () => {} }) {
   return summary;
 }
 
-module.exports = { CHUNK, PING, findCards, listCardFiles, Client, pickServer, uploadFile, syncFiles, withRetry };
+module.exports = { CHUNK, PING, volumeRoots, findCards, listCardFiles, Client, pickServer, uploadFile, syncFiles, withRetry };

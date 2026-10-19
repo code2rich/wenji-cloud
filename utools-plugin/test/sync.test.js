@@ -4,7 +4,7 @@ const assert = require('node:assert');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const { CHUNK, findCards, listCardFiles, Client, pickServer, syncFiles } = require('../lib/sync');
+const { CHUNK, volumeRoots, findCards, listCardFiles, Client, pickServer, syncFiles } = require('../lib/sync');
 
 function tmpdir() {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'wenji-'));
@@ -75,6 +75,19 @@ test('findCards 只识别含 record 目录的卷', () => {
   fs.mkdirSync(path.join(vols, 'Macintosh HD', 'record'), { recursive: true });
   assert.deepStrictEqual(findCards(vols).map(c => c.name), ['NO NAME']);
   assert.deepStrictEqual(findCards(path.join(vols, 'missing')), []);
+});
+
+test('Windows 下扫描系统盘以外的盘符', () => {
+  const old = process.env.SystemDrive;
+  process.env.SystemDrive = 'C:';
+  try {
+    const roots = volumeRoots('win32');
+    assert.strictEqual(roots[0].name, 'D:');
+    assert.strictEqual(roots[0].root, 'D:\\');
+    assert.ok(!roots.some(r => r.name === 'C:') && roots.length === 23);
+  } finally {
+    if (old === undefined) delete process.env.SystemDrive; else process.env.SystemDrive = old;
+  }
 });
 
 test('listCardFiles 同一录音只取首选格式', () => {

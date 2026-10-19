@@ -159,6 +159,9 @@ def test_pipeline_full_run(client, tmp_path, monkeypatch):
                 {"start_ms": 1600, "end_ms": 1900, "speaker": "1", "text": "好的我来负责测试工作安排"}]
 
     def fake_chat(cfg, system, user):
+        if "起一个标题" in system:
+            assert user.startswith("### 📑 智能总结")  # 用纪要而不是整篇转写生成标题
+            return "标题：“闻记上线计划讨论”。\n"
         assert "[09:14:46] 说话人0：今天讨论闻记上线计划" in user
         return "# 闻记上线\n## 分工\n- 测试" if "脑图" in system else "我先想一下\n### 📑 智能总结\n内容"
 
@@ -171,6 +174,7 @@ def test_pipeline_full_run(client, tmp_path, monkeypatch):
     assert seen["hotwords"] == ["闻记"]
     assert rec["summary"] == "### 📑 智能总结\n内容"  # 模板前的独白被去掉
     assert rec["mindmap"].startswith("# 闻记上线")
+    assert rec["title"] == "闻记上线计划讨论"  # 默认文件名标题被替换，引号和标点已去掉
     assert len(rec["segments"]) == 2 and rec["duration_s"] > 1
     audio = client.get(f"/api/recordings/{rid}/audio", headers=AUTH)
     assert audio.status_code == 200 and audio.headers["content-type"] == "audio/mp4"
@@ -184,6 +188,11 @@ def test_pipeline_full_run(client, tmp_path, monkeypatch):
     r = client.post(f"/api/recordings/{rid}/process", headers=AUTH, json={"kind": "summary"})
     assert r.status_code == 200
     assert client.post(f"/api/recordings/{rid}/process", headers=AUTH, json={"kind": "full"}).status_code == 409
+
+    # 用户改过的标题，重新生成纪要时不会被覆盖
+    client.patch(f"/api/recordings/{rid}", headers=AUTH, json={"title": "我的标题"})
+    run_queue(client)
+    assert client.get(f"/api/recordings/{rid}", headers=AUTH).json()["title"] == "我的标题"
 
 
 def test_worker_records_failure_and_continues(client, monkeypatch):

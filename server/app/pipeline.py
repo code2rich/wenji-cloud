@@ -79,6 +79,15 @@ def summarize(db: DB, rec: dict, cfg: dict, requested: bool = False) -> None:
     meta = f"录音时间={rec['recorded_at'] or '未知'}；时长=约 {minutes} 分钟；文件={rec['name']}"
     result = summary.summarize(s, text, meta)
     db.run("UPDATE recordings SET summary=?, summary_model=? WHERE id=?", (result, s["model"], rec["id"]))
+    # 标题还是卡上的文件名时，用纪要生成一个能看出主题的标题；用户改过的标题不动。
+    if rec["title"] == Path(rec["name"]).stem:
+        try:
+            new_title = summary.title(s, result)
+        except Exception:  # 标题只是锦上添花，失败不影响纪要
+            log.warning("recording %s title generation failed", rec["id"], exc_info=True)
+            new_title = ""
+        if new_title:
+            db.run("UPDATE recordings SET title=? WHERE id=?", (new_title, rec["id"]))
     if s["mindmap"]:
         db.run("UPDATE recordings SET mindmap=? WHERE id=?", (summary.mindmap(s, text, meta), rec["id"]))
 

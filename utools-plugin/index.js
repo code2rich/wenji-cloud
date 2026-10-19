@@ -78,7 +78,7 @@ function renderHero(s, cfg) {
   } else if (!s.card) {
     cls = 'empty';
     title = '插入录音卡后自动同步';
-    sub = '也可以选择电脑上的音频文件上传，或在访达中选中文件后用 uTools“上传到闻记”';
+    sub = '也可以选择电脑上的音频文件上传，或在访达（Windows 资源管理器）中选中文件后用 uTools“上传到闻记”';
     actions = uploadBtn;
   } else if (s.checkError) {
     title = `录音卡「${esc(s.card.name)}」`;

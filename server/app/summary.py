@@ -122,3 +122,20 @@ def mindmap(cfg: dict, text: str, meta: str) -> str:
     content = re.sub(r"^```(?:markdown)?\s*|\s*```$", "", content.strip())
     root = re.search(r"^#\s", content, re.M)  # 去掉根节点之前的说明文字
     return content[root.start():].strip() if root else content
+
+
+TITLE_SYS = """根据给定的录音纪要，为这段录音起一个标题：
+- 不超过 16 个汉字，概括主题或场景，例如：三季度产品复盘会、与供应商的价格沟通、客户访谈：华东区渠道；
+- 不写日期、时长，不加引号、书名号或句末标点；
+- 只输出标题本身。"""
+
+
+def title(cfg: dict, summary_text: str) -> str:
+    """用纪要（比转写短得多）生成标题；结果不合格时返回空串，由调用方保留原标题。"""
+    reply = chat(cfg, TITLE_SYS, summary_text[:6000])
+    line = next((l for l in reply.splitlines() if l.strip()), "")
+    line = re.sub(r"^(标题[:：]\s*)|[#*`]", "", line)
+    # 引号、书名号和句末标点可能交错出现（如 “标题”。），反复剥到稳定为止
+    while (trimmed := line.strip().strip("\"'“”‘’《》「」【】").rstrip("。.!！")) != line:
+        line = trimmed
+    return line[:40]

@@ -123,9 +123,18 @@ function applyResults(results) {
   }
 }
 
-function eject(volumeName) {
+function eject(card) {
+  if (process.platform === 'win32') {
+    // 资源管理器的“弹出”：命令本身不报告成败，稍等后看盘符是否还在。
+    const script = `(New-Object -ComObject Shell.Application).Namespace(17).ParseName('${card.name}').InvokeVerb('Eject')`;
+    return new Promise(resolve => {
+      execFile('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script], { timeout: 30000 }, () => {
+        setTimeout(() => resolve(!fs.existsSync(card.root)), 3000);
+      });
+    });
+  }
   return new Promise(resolve => {
-    execFile('diskutil', ['eject', `/Volumes/${volumeName}`], { timeout: 30000 }, err => resolve(!err));
+    execFile('diskutil', ['eject', card.root], { timeout: 30000 }, err => resolve(!err));
   });
 }
 
@@ -190,7 +199,7 @@ async function syncCard() {
       ? `同步完成：新上传 ${result.uploaded.length} 条，跳过已同步 ${result.skipped} 条`
       : `全部 ${result.total} 条录音都已在服务端，无需上传`;
     if (result.failed.length) text += `，失败 ${result.failed.length} 条`;
-    if (cfg.ejectAfter && !result.failed.length) text += (await eject(card.name)) ? '，已推出录音卡' : '，推出录音卡失败';
+    if (cfg.ejectAfter && !result.failed.length) text += (await eject(card)) ? '，已推出录音卡' : '，推出录音卡失败';
     log(text, result.failed.length ? 'error' : 'ok');
     utools.showNotification(text);
     return result;
@@ -213,7 +222,7 @@ async function uploadPaths(paths) {
   return result;
 }
 
-// 轮询 /Volumes：插入录音卡后先比对，开启自动同步时直接上传缺失文件。
+// 轮询卷列表（macOS 的 /Volumes、Windows 的盘符）：插入录音卡后先比对，开启自动同步时直接上传缺失文件。
 // 插件需在 uTools 中开启“跟随主程序同时启动运行”并关闭“退出到后台立即结束运行”才能常驻。
 function poll() {
   const cards = findCards(VOLUMES);
