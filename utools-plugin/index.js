@@ -30,6 +30,11 @@ function friendly(name) {
   return `${Number(m[3])}月${Number(m[4])}日 ${m[5]}:${m[6]} ${kind}`;
 }
 
+function kindIcon(name) {
+  const n = name.toLowerCase();
+  return n.startsWith('call') ? 'i-phone' : n.startsWith('note') ? 'i-mic' : 'i-file';
+}
+
 function badge(f) {
   const pct = f.size ? Math.floor((f.done || 0) / f.size * 100) : 0;
   const text = {
@@ -57,6 +62,8 @@ function renderHero(s, cfg) {
     sub = '填写服务地址和访问令牌后即可同步';
     actions = '<button class="btn primary large" data-act="settings">去设置</button>';
   } else if (s.running && s.progress) {
+    cls = 'syncing';
+    icon = 'i-upload';
     const p = s.progress;
     const pct = p.totalBytes ? Math.min(100, p.doneBytes / p.totalBytes * 100) : 0;
     const eta = p.speed ? (p.totalBytes - p.doneBytes) / p.speed : 0;
@@ -106,6 +113,7 @@ function renderFiles(s) {
   const files = [...s.files].sort((a, b) => order[a.state] - order[b.state] || b.name.localeCompare(a.name));
   $('#files').innerHTML = files.map(f => `
     <div class="file">
+      <span class="file-icon ${kindIcon(f.name)}"><svg><use href="#${kindIcon(f.name)}"/></svg></span>
       <div class="file-name"><strong>${esc(friendly(f.name))}</strong><small>${esc(f.name)}</small></div>
       <span class="file-size">${fmtSize(f.size)}</span>
       ${badge(f)}

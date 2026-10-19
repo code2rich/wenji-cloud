@@ -200,7 +200,7 @@ function renderList() {
     const time = when(r).toTimeString().slice(0, 5);
     html += `
       <button class="item ${r.id === state.current ? 'active' : ''}" data-id="${r.id}">
-        <span class="item-icon"><svg><use href="#${kindIcon(r)}"/></svg></span>
+        <span class="item-icon ${kindIcon(r)}"><svg><use href="#${kindIcon(r)}"/></svg></span>
         <span style="min-width:0">
           <div class="item-title">${highlight(displayTitle(r), state.q)}</div>
           <div class="item-meta">${time}${r.duration_s ? ' · ' + fmtDuration(r.duration_s) : ''}${r.has_summary ? ' · 有纪要' : ''}</div>
@@ -240,6 +240,10 @@ document.addEventListener('keydown', event => {
     $('#search').focus();
   }
   if (event.key === 'Escape') closeMenu();
+  if (event.key === ' ' && $('#player') && !['INPUT', 'TEXTAREA', 'SELECT', 'BUTTON'].includes(document.activeElement.tagName)) {
+    event.preventDefault();
+    run(actions.toggle)();
+  }
 });
 
 // ── 上传（网页端，与插件使用同一套分片续传接口）────────────────
@@ -364,14 +368,32 @@ function renderDetail(fresh) {
         <div id="d-head"></div>
         <div id="d-banner"></div>
         <div class="player">
-          <audio id="player" controls preload="none" src="/api/recordings/${rec.id}/audio"></audio>
+          <audio id="player" preload="none" src="/api/recordings/${rec.id}/audio"></audio>
+          <button class="play" data-act="toggle" title="播放 / 暂停（空格）"><svg><use href="#i-play"/></svg></button>
+          <span class="time" id="p-cur">0:00</span>
+          <div class="wave" id="wave" title="点击跳转">${waveBars(rec.id)}<div class="wave-done" id="wave-done">${waveBars(rec.id)}</div></div>
+          <span class="time muted" id="p-total">${fmtClock(rec.duration_s || 0)}</span>
           <div class="speed">${[1, 1.25, 1.5, 2].map(r => `<button data-rate="${r}" class="${r === 1 ? 'active' : ''}">${r}×</button>`).join('')}</div>
         </div>
         <nav class="tabs" id="d-tabs"></nav>
         <div class="tab-body" id="d-body"></div>
       </div>`;
     pane.scrollTop = 0;
-    $('#player').addEventListener('timeupdate', onTimeUpdate);
+    const player = $('#player');
+    player.addEventListener('timeupdate', onTimeUpdate);
+    player.addEventListener('timeupdate', updatePlayer);
+    player.addEventListener('loadedmetadata', updatePlayer);
+    player.addEventListener('play', updatePlayer);
+    player.addEventListener('pause', updatePlayer);
+    player.addEventListener('waiting', () => $('.player')?.classList.add('loading'));
+    player.addEventListener('playing', () => $('.player')?.classList.remove('loading'));
+    $('#wave').addEventListener('click', event => {
+      const box = event.currentTarget.getBoundingClientRect();
+      const total = player.duration || state.record.duration_s || 0;
+      if (!total) return;
+      player.currentTime = Math.max(0, Math.min(1, (event.clientX - box.left) / box.width)) * total;
+      player.play().catch(() => {});
+    });
   }
   $('#d-head').innerHTML = `
     <div class="detail-head">
@@ -379,12 +401,14 @@ function renderDetail(fresh) {
         <input class="title-input" id="title" value="${esc(displayTitle(rec))}" aria-label="标题">
         <div class="meta-row">
           ${statusBadge(rec)}
-          <span>${esc(rec.recorded_at || rec.created_at.slice(0, 16).replace('T', ' '))}</span>
-          ${rec.duration_s ? `<span>${fmtDuration(rec.duration_s)}</span>` : ''}
+          <span class="meta"><svg><use href="#i-clock"/></svg>${esc((rec.recorded_at || rec.created_at.slice(0, 16).replace('T', ' ')).slice(0, 16))}</span>
+          ${rec.duration_s ? `<span class="meta"><svg><use href="#i-wave"/></svg>${fmtDuration(rec.duration_s)}</span>` : ''}
+          ${rec.source ? `<span class="meta"><svg><use href="#i-card"/></svg>${esc(rec.source)}</span>` : ''}
+        </div>
+        <div class="meta-sub">
           <span title="原始文件">${esc(rec.name)} · ${fmtSize(rec.size)}</span>
-          ${rec.source ? `<span>来自 ${esc(rec.source)}</span>` : ''}
-          ${rec.asr_provider ? `<span>转写：${esc(PROVIDERS[rec.asr_provider] || rec.asr_provider)}</span>` : ''}
-          ${rec.summary_model ? `<span>纪要：${esc(rec.summary_model)}</span>` : ''}
+          ${rec.asr_provider ? `<span>转写 · ${esc(PROVIDERS[rec.asr_provider] || rec.asr_provider)}</span>` : ''}
+          ${rec.summary_model ? `<span>纪要 · ${esc(rec.summary_model)}</span>` : ''}
         </div>
       </div>
       <div class="head-actions">
@@ -416,8 +440,8 @@ function renderTab() {
   const body = $('#d-body');
   if (state.tab === 'summary') {
     body.innerHTML = rec.summary
-      ? `<div class="tab-tools"><span style="flex:1"></span><button class="btn small" data-act="copy-summary"><svg><use href="#i-copy"/></svg>复制</button></div>
-         <div class="prose">${markdown(rec.summary)}</div>`
+      ? `<div class="tab-tools"><span class="tab-note">${rec.summary_model ? `由 ${esc(rec.summary_model)} 生成` : ''}</span><button class="btn small" data-act="copy-summary"><svg><use href="#i-copy"/></svg>复制</button></div>
+         <article class="prose paper">${markdown(rec.summary)}</article>`
       : emptyBody(rec, '纪要');
   } else if (state.tab === 'mindmap') {
     body.innerHTML = rec.mindmap
@@ -445,14 +469,15 @@ function renderTab() {
       stats[s.speaker].n++;
       stats[s.speaker].ms += s.end_ms - s.start_ms;
     }
+    const total = Object.values(stats).reduce((sum, st) => sum + st.ms, 0) || 1;
     body.innerHTML = `
       <p class="muted" style="margin-top:0">给说话人命名后，转写、导出和 MCP 查询都会使用新名字。想让纪要也使用新名字，保存后点“重新生成纪要”。</p>
       <div class="speakers">${Object.entries(stats).map(([spk, st]) => `
-        <div class="speaker-row spk-${Number(spk) % 6}">
-          <span class="dot"></span>
-          <span><strong style="color:var(--text)">说话人 ${Number(spk) + 1}</strong><br><small>${st.n} 段 · ${fmtDuration(st.ms / 1000)}</small></span>
+        <div class="speaker-row">
+          ${avatar(rec, spk)}
+          <span class="spk-info"><strong>说话人 ${Number(spk) + 1}</strong><small>${st.n} 段 · ${fmtDuration(st.ms / 1000)} · ${Math.round(st.ms / total * 100)}%</small>
+            <span class="share"><i class="spk-bg-${Number(spk) % 6}" style="width:${(st.ms / total * 100).toFixed(1)}%"></i></span></span>
           <input data-spk="${esc(spk)}" value="${esc(rec.speaker_names[spk] || '')}" placeholder="输入姓名或角色，如：张三 / 客户">
-          <span></span>
         </div>`).join('')}</div>
       <div class="tab-tools" style="margin-top:14px"><button class="btn primary" data-act="names">保存命名</button></div>`;
   }
@@ -463,9 +488,11 @@ function renderSegments() {
   const q = state.transcriptQuery;
   const rows = rec.segments.map((s, i) => ({ ...s, i })).filter(s => !q || s.text.includes(q));
   $('#segments').innerHTML = rows.map(s => `
-    <div class="seg" data-i="${s.i}">
-      <time data-seek="${s.start_ms}">${clock(s.start_ms, rec.recorded_at)}</time>
-      <div>${s.speaker !== null ? `<div class="who spk-${Number(s.speaker) % 6}">${esc(speakerName(rec, s.speaker))}</div>` : ''}
+    <div class="seg${s.speaker === null ? ' anon' : ''}" data-i="${s.i}">
+      ${s.speaker !== null ? avatar(rec, s.speaker) : ''}
+      <div class="seg-body">
+        <div class="seg-head">${s.speaker !== null ? `<span class="who spk-${Number(s.speaker) % 6}">${esc(speakerName(rec, s.speaker))}</span>` : ''}
+          <time data-seek="${s.start_ms}" title="从这里播放">${clock(s.start_ms, rec.recorded_at)}</time></div>
         <p>${highlight(s.text, q)}</p></div>
     </div>`).join('') || `<div class="empty"><strong>没有找到“${esc(q)}”</strong></div>`;
 }
@@ -502,30 +529,84 @@ function markdown(src) {
     }
     if (inList) { html += '</ul>'; inList = false; }
     const h = line.match(/^(#{1,5})\s+(.*)$/);
+    const topic = line.match(/^\s*\*\*([^*]+)\*\*\s*$/);
     if (h) html += `<h${h[1].length + 1}>${inline(h[2])}</h${h[1].length + 1}>`;
+    else if (topic) html += `<h6>${esc(topic[1])}</h6>`;
     else if (line.trim()) html += `<p>${inline(line)}</p>`;
   }
   return html + (inList ? '</ul>' : '');
 }
 
 // 脑图用 markmap 渲染（需能访问 jsDelivr）；加载失败时显示为大纲。
-function renderMindmap(md) {
+const MARKMAP_LIBS = [
+  'https://cdn.jsdelivr.net/npm/d3@7.9.0/dist/d3.min.js',
+  'https://cdn.jsdelivr.net/npm/markmap-lib@0.18.12/dist/browser/index.iife.js',
+  'https://cdn.jsdelivr.net/npm/markmap-view@0.18.12/dist/browser/index.js',
+];
+let markmapReady;
+
+function loadScript(src) {
+  return new Promise((resolve, reject) => {
+    const script = document.createElement('script');
+    script.src = src;
+    script.onload = resolve;
+    script.onerror = () => reject(new Error(`加载失败：${src}`));
+    document.head.appendChild(script);
+  });
+}
+
+async function renderMindmap(md) {
   const box = $('#mindmap');
-  const draw = () => {
-    if (!box.isConnected) return;
-    box.innerHTML = '<div class="markmap" style="height:100%"><script type="text/template"></script></div>';
-    box.querySelector('script').textContent = md;
-    window.markmap.autoLoader.renderAll();
-  };
-  if (window.markmap?.autoLoader?.renderAll) return draw();
-  window.markmap = { autoLoader: { manual: true } };
-  const script = document.createElement('script');
-  script.src = 'https://cdn.jsdelivr.net/npm/markmap-autoloader@0.18.12';
-  script.onload = draw;
-  script.onerror = () => {
-    box.outerHTML = `<p class="muted">脑图组件加载失败，以大纲显示：</p><div class="prose">${markdown(md)}</div>`;
-  };
-  document.head.appendChild(script);
+  try {
+    markmapReady ??= MARKMAP_LIBS.reduce((p, src) => p.then(() => loadScript(src)), Promise.resolve());
+    await markmapReady;
+  } catch {
+    markmapReady = null;
+    if (box.isConnected) box.outerHTML = `<p class="muted">脑图组件加载失败，以大纲显示：</p><div class="prose paper">${markdown(md)}</div>`;
+    return;
+  }
+  if (!box.isConnected) return;
+  const { Transformer, Markmap } = window.markmap;
+  box.innerHTML = '<svg></svg><div class="mm-tools"><button class="btn icon small" data-mm="fit" title="适应窗口"><svg><use href="#i-fit"/></svg></button></div>';
+  const { root } = new Transformer().transform(md);
+  const mm = Markmap.create(box.querySelector('svg'), { duration: 300, paddingX: 14, spacingVertical: 8, maxWidth: 260 }, root);
+  box.querySelector('[data-mm="fit"]').addEventListener('click', () => mm.fit());
+}
+
+// 波形只是装饰：按录音 id 生成固定的高低起伏，同一条录音每次看到的一样。
+function waveBars(seed) {
+  let x = seed * 9301 + 49297;
+  const rand = () => (x = (x * 9301 + 49297) % 233280) / 233280;
+  let html = '';
+  for (let i = 0; i < 88; i++) {
+    const envelope = 0.55 + Math.sin(i / 7 + seed) * 0.25 + Math.sin(i / 2.3 + seed * 3) * 0.12;
+    html += `<i style="height:${Math.round(Math.max(12, Math.min(100, envelope * (0.45 + rand() * 0.75) * 100)))}%"></i>`;
+  }
+  return html;
+}
+
+function fmtClock(secs) {
+  const s = Math.max(0, Math.floor(secs || 0));
+  const h = Math.floor(s / 3600), m = Math.floor(s % 3600 / 60), sec = String(s % 60).padStart(2, '0');
+  return h ? `${h}:${String(m).padStart(2, '0')}:${sec}` : `${m}:${sec}`;
+}
+
+function updatePlayer() {
+  const player = $('#player');
+  if (!player || !state.record) return;
+  const total = player.duration || state.record.duration_s || 0;
+  $('#p-cur').textContent = fmtClock(player.currentTime);
+  if (player.duration) $('#p-total').textContent = fmtClock(player.duration);
+  $('#wave-done').style.clipPath = `inset(0 ${100 - (total ? player.currentTime / total * 100 : 0)}% 0 0)`;
+  const playing = !player.paused && !player.ended;
+  $('.player').classList.toggle('playing', playing);
+  $('.player .play use').setAttribute('href', playing ? '#i-pause' : '#i-play');
+}
+
+function avatar(rec, spk) {
+  const name = speakerName(rec, spk);
+  const initial = rec.speaker_names[spk] ? [...name][0] : Number(spk) + 1;
+  return `<span class="avatar spk-bg-${Number(spk) % 6}" title="${esc(name)}">${esc(initial)}</span>`;
 }
 
 function closeMenu() {
@@ -564,6 +645,17 @@ async function copy(text, what) {
 const actions = {
   back() {
     document.body.classList.remove('show-detail');
+  },
+  toggle() {
+    const player = $('#player');
+    if (player.paused) {
+      $('.player').classList.add('loading');
+      return player.play().catch(e => {
+        $('.player').classList.remove('loading');
+        throw new Error(`无法播放：${e.message}`);
+      });
+    }
+    player.pause();
   },
   menu(el) {
     $('.menu') ? closeMenu() : openMenu(el);
@@ -654,7 +746,7 @@ $('#detail').addEventListener('keydown', event => {
 });
 
 function placeholder() {
-  return `<div class="empty" style="height:100%"><svg><use href="#i-library"/></svg><strong>选择一条录音</strong>查看纪要、脑图和转写</div>`;
+  return `<div class="empty hero-empty"><span class="logo xl"><svg><use href="#i-logo"/></svg></span><strong>选择一条录音</strong>查看纪要、脑图和转写 · 按 <kbd>/</kbd> 搜索</div>`;
 }
 
 // ── 设置 ──────────────────────────────────────────────────────────
