@@ -446,7 +446,7 @@ function renderTab() {
   if (state.tab === 'summary') {
     body.innerHTML = rec.summary
       ? `<div class="tab-tools"><span class="tab-note">${rec.summary_model ? `由 ${esc(rec.summary_model)} 生成` : ''}</span><button class="btn small" data-act="copy-summary"><svg><use href="#i-copy"/></svg>复制</button></div>
-         <article class="prose paper">${markdown(rec.summary)}</article>`
+         <article class="prose paper">${markdown(rec.summary, stampResolver(rec))}</article>`
       : emptyBody(rec, '纪要');
   } else if (state.tab === 'mindmap') {
     body.innerHTML = rec.mindmap
@@ -608,9 +608,33 @@ function onTimeUpdate(event) {
   }
 }
 
-// 只渲染纪要模板用到的 Markdown 子集：标题、无序列表、加粗、段落。
-function markdown(src) {
-  const inline = t => esc(t).replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+// 纪要里的 [HH:MM:SS] 是转写稿里的时刻（录音开始时间 + 偏移）：换算成偏移后对齐到最近的一句。
+// 离任何一句都超过 2 分钟的（模型编的、或转写已重做）不做成链接，避免跳到不相干的地方。
+function stampResolver(rec) {
+  const segs = rec.segments;
+  if (!segs.length) return null;
+  const toSec = hms => hms.split(':').reduce((sum, n) => sum * 60 + Number(n), 0);
+  const base = toSec(clock(0, rec.recorded_at));
+  return hms => {
+    const off = (((toSec(hms) - base) % 86400) + 86400) % 86400 * 1000; // 跨零点的录音也能换算
+    let lo = 0, hi = segs.length - 1;
+    while (lo < hi) {
+      const mid = (lo + hi + 1) >> 1;
+      if (segs[mid].start_ms <= off) lo = mid; else hi = mid - 1;
+    }
+    const near = [segs[lo], segs[lo + 1]].filter(Boolean)
+      .reduce((a, b) => Math.abs(b.start_ms - off) < Math.abs(a.start_ms - off) ? b : a);
+    return Math.abs(near.start_ms - off) <= 120000 ? near.start_ms : null;
+  };
+}
+
+// 只渲染纪要模板用到的 Markdown 子集：标题、无序列表、加粗、段落；[HH:MM:SS] 做成跳转播放的链接。
+function markdown(src, stamp = null) {
+  const inline = t => esc(t).replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+    .replace(/\[(\d{2}:\d{2}:\d{2})\]/g, (raw, hms) => {
+      const ms = stamp?.(hms);
+      return ms == null ? raw : `<time class="ref" data-seek="${ms}" title="跳到原话播放">${hms}</time>`;
+    });
   let html = '', inList = false;
   for (const line of src.split('\n')) {
     const li = line.match(/^\s*[-*•]\s+(.*)$/);

@@ -356,6 +356,9 @@ mark { background: color-mix(in srgb, #ffd43b 55%, transparent); color: inherit;
 .seg time:hover { color: var(--accent); background: var(--accent-soft); }
 .seg .who { font-size: 13px; font-weight: 640; }
 .seg p { margin: 2px 0 0; line-height: 1.8; font-size: 14.5px; }
+.prose time.ref { display: inline-block; font: 11.5px var(--mono); color: var(--accent); background: var(--accent-soft);
+  border-radius: 5px; padding: 0 5px; margin: 0 2px; cursor: pointer; vertical-align: 1px; white-space: nowrap; }
+.prose time.ref:hover { box-shadow: inset 0 0 0 1px var(--accent-ring); }
 .seg .edited { font-size: 11px; color: var(--muted); background: var(--panel-2); border-radius: 4px; padding: 0 5px; }
 .seg-edit { margin-left: auto; width: 24px; height: 24px; display: grid; place-items: center; border: 0; border-radius: 6px;
   background: none; color: var(--muted); cursor: pointer; opacity: 0; transition: opacity .15s; }
