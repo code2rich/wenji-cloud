@@ -18,7 +18,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import audio, config, library, mcp_server, pipeline, settings, voice
+from . import audio, config, corrections, library, mcp_server, pipeline, settings, voice
 from .db import DB, now
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
@@ -54,6 +54,14 @@ class Patch(BaseModel):
 class SegmentEdit(BaseModel):
     text: str | None = None
     speaker: str | None = None
+
+
+class Rule(BaseModel):
+    source: str
+    target: str
+    scope: str = "all"               # future 只用于以后的转写 / recording 这条录音 / all 全部录音
+    recording_id: int | None = None
+    hotword: bool = False
 
 
 class Merge(BaseModel):
@@ -340,7 +348,19 @@ def create_app(data_dir: Path | None = None, token: str | None = None, start_wor
                 db.run("UPDATE segments SET text=?, speaker=?, edited=1 WHERE recording_id=? AND idx=?",
                        (text, speaker, rid, idx))
                 db.run("UPDATE recordings SET updated_at=? WHERE id=?", (now(), rid))
-        return recording(rid)
+        # 改了错词时建议加入纠错规则，以后的转写自动改对，已有的也可以一并修正
+        return {**recording(rid), "rule_suggestions": corrections.suggestions(db, rid, seg["text"], text)}
+
+    @app.post("/api/corrections")
+    def add_correction(body: Rule):
+        if body.recording_id is not None:
+            get_rec(body.recording_id)
+        try:
+            changed = corrections.add(db, body.source, body.target, body.scope, body.recording_id, body.hotword)
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+        cfg = settings.load(db)
+        return {"changed": changed, "corrections": cfg["corrections"], "hotwords": cfg["hotwords"]}
 
     @app.post("/api/recordings/{rid}/speakers/merge")
     def merge_speakers(rid: int, body: Merge):

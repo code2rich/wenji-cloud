@@ -329,8 +329,10 @@ def test_settings_connection_test(client, monkeypatch):
     monkeypatch.setattr(summary, "chat", lambda cfg, s, u: "可以")
     r = client.post("/api/settings/test", headers=AUTH, json={"target": "summary"}).json()
     assert r["ok"] and "可以" in r["message"]
+    # 指向一个不会有服务的地址，不受运行环境里是否真有 asr-worker 影响
+    client.put("/api/settings", headers=AUTH, json={"asr": {"provider": "funasr", "funasr_url": "http://127.0.0.1:9"}})
     r = client.post("/api/settings/test", headers=AUTH, json={"target": "asr"}).json()
-    assert not r["ok"] and "无法连接" in r["message"]  # 测试环境没有 asr-worker
+    assert not r["ok"] and "无法连接" in r["message"]
 
 
 def test_stale_uploads_cleaned_on_startup(tmp_path):
@@ -590,3 +592,72 @@ def test_merge_speakers(client, monkeypatch, tmp_path):
     assert calls and all(c.split("-")[0] in {"0", "1"} for c in calls)
     rec = client.get(f"/api/recordings/{rid}", headers=AUTH).json()
     assert rec["status"] == "done" and set(rec["voices"]) == {"0", "1"} and rec["speaker_names"] == {"0": "王总"}
+
+
+@pytest.mark.parametrize("old,new,rules", [
+    ("文记很好用", "闻记很好用", [("文记", "闻记")]),                        # 单字改动扩成两个字
+    ("调用 open ai 的接口", "调用 OpenAI 的接口", [("open ai", "OpenAI")]),  # 英文扩到整个词组
+    ("用GPT4来做", "用GPT-4o来做", [("GPT4", "GPT-4o")]),
+    ("我们找了横生和文记两家", "我们找了恒生和闻记两家", [("横生", "恒生"), ("文记", "闻记")]),
+    ("嗯，我们开始吧", "我们开始吧", []),                                     # 删语气词
+    ("好的，那就这样", "好的。那就这样", []),                                 # 只改标点
+    ("这个方案还行吧大家看看", "这个方案还行，大家看看", []),                   # 字换成标点
+    ("今天讨论一下这个项目的进度安排问题", "今天讨论项目排期", []),             # 整句改写
+])
+def test_correction_suggestions(old, new, rules):
+    from app import corrections
+    assert [(r["from"], r["to"]) for r in corrections.suggest(old, new)] == rules
+
+
+def test_edit_suggests_rule_and_backfills(client, monkeypatch, tmp_path):
+    wav = tmp_path / "r.wav"
+    subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-f", "lavfi", "-i", "sine=frequency=300:duration=4",
+                    "-ar", "16000", "-ac", "1", str(wav)], check=True)
+    data = wav.read_bytes()
+    turns = [{"start_ms": 0, "end_ms": 2000, "speaker": "0", "text": "文记的同步很快"},
+             {"start_ms": 2000, "end_ms": 4000, "speaker": "1", "text": "文记还能做纪要"}]
+    monkeypatch.setattr(asr, "funasr", lambda *a: turns)
+    r1 = upload(client, "r1.wav", data, chunk=len(data))["recording_id"]
+    r2 = upload(client, "r2.wav", data + b"\0", chunk=len(data) + 1)["recording_id"]
+    run_queue(client)
+    client.db.run("UPDATE recordings SET summary='文记会议纪要' WHERE id=?", (r2,))
+
+    r = client.patch(f"/api/recordings/{r1}/segments/0", headers=AUTH, json={"text": "闻记的同步很快"}).json()
+    assert r["rule_suggestions"] == [{"from": "文记", "to": "闻记", "here": 1, "total": 3}]
+
+    body = {"source": "文记", "target": "闻记", "scope": "all", "recording_id": r1, "hotword": True}
+    res = client.post("/api/corrections", headers=AUTH, json=body).json()
+    assert res["changed"] == 3 and {"from": "文记", "to": "闻记"} in res["corrections"] and "闻记" in res["hotwords"]
+    rec2 = client.get(f"/api/recordings/{r2}", headers=AUTH).json()
+    assert [s["text"] for s in rec2["segments"]] == ["闻记的同步很快", "闻记还能做纪要"]
+    assert rec2["summary"] == "闻记会议纪要" and rec2["segments"][0]["edited"] == 0
+    # 规则已存在就不再建议；同一个错词再加会覆盖旧的改法
+    r = client.patch(f"/api/recordings/{r1}/segments/1", headers=AUTH, json={"text": "文记还能做纪要"}).json()
+    r = client.patch(f"/api/recordings/{r1}/segments/1", headers=AUTH, json={"text": "闻记还能做纪要"}).json()
+    assert r["rule_suggestions"] == []
+    client.post("/api/corrections", headers=AUTH, json={**body, "target": "闻记AI", "scope": "future", "hotword": False})
+    rules = client.get("/api/settings", headers=AUTH).json()["corrections"]
+    assert [x for x in rules if x["from"] == "文记"] == [{"from": "文记", "to": "闻记AI"}]
+    # 以后的转写自动套用规则
+    r3 = upload(client, "r3.wav", data + b"\0\0", chunk=len(data) + 2)["recording_id"]
+    run_queue(client)
+    assert client.get(f"/api/recordings/{r3}", headers=AUTH).json()["segments"][0]["text"] == "闻记AI的同步很快"
+    # 只修正这条录音
+    client.db.run("UPDATE segments SET text='横生电子' WHERE recording_id IN (?, ?) AND idx=0", (r1, r2))
+    res = client.post("/api/corrections", headers=AUTH, json={**body, "source": "横生", "target": "恒生", "scope": "recording"}).json()
+    assert res["changed"] == 1
+    texts = {rid: client.get(f"/api/recordings/{rid}", headers=AUTH).json()["segments"][0]["text"] for rid in (r1, r2)}
+    assert texts == {r1: "恒生电子", r2: "横生电子"}
+    assert client.post("/api/corrections", headers=AUTH, json={**body, "target": "文记"}).status_code == 400
+    assert client.post("/api/corrections", headers=AUTH, json={**body, "scope": "x"}).status_code == 400
+
+
+def test_correction_counts_are_case_sensitive(client):
+    from app import corrections
+    from app.db import now
+    client.db.run("INSERT INTO recordings(id, name, size, title, audio_path, sha256, status, created_at, updated_at) "
+                  "VALUES(1, 'a', 1, 'a', '', '', 'done', ?, ?)", (now(), now()))
+    for i, text in enumerate(["这个agent很好", "这个Agent很好"]):
+        client.db.run("INSERT INTO segments(recording_id, idx, start_ms, end_ms, speaker, text) VALUES(1,?,0,1,'0',?)", (i, text))
+    assert corrections.count(client.db, "agent", 1) == (1, 1)
+    assert corrections.add(client.db, "agent", "Agent", "all", 1, False) == 1

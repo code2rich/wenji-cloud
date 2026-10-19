@@ -16,6 +16,7 @@ const state = {
   recordings: [], filter: 'all', q: '', current: null, record: null, signature: '',
   tab: 'summary', follow: true, transcriptQuery: '', listSignature: '', queue: 0,
   editing: null, // 正在修改的转写句（rec.segments 下标）
+  ruleHint: null, // 刚改完的句子提炼出的纠错规则建议：{ i, items }
 };
 
 // ── 工具函数 ──────────────────────────────────────────────────────
@@ -298,6 +299,7 @@ async function openRecord(id) {
     state.signature = '';
     state.transcriptQuery = '';
     state.editing = null;
+    state.ruleHint = null;
     renderList();
   }
   document.body.classList.add('show-detail');
@@ -550,8 +552,27 @@ function renderSegments() {
           <time data-seek="${s.start_ms}" title="从这里播放">${clock(s.start_ms, rec.recorded_at)}</time>
           ${s.edited ? '<span class="edited" title="手动修改过；重新转写会覆盖">已修改</span>' : ''}
           ${state.editing === s.i || rec.busy ? '' : `<button class="seg-edit" data-act="edit-seg" data-seg="${s.i}" title="修改这句"><svg><use href="#i-edit"/></svg></button>`}</div>
-        ${state.editing === s.i ? segEditor(rec, s, draft) : `<p>${highlight(s.text, q)}</p>`}</div>
+        ${state.editing === s.i ? segEditor(rec, s, draft) : `<p>${highlight(s.text, q)}</p>`}
+        ${state.ruleHint?.i === s.i ? ruleCard(rec) : ''}</div>
     </div>`).join('') || `<div class="empty"><strong>没有找到“${esc(q)}”</strong></div>`;
+}
+
+// 改完错词后的建议：加入纠错规则，以后的转写自动改对，已有转写也可以一并修正。
+function ruleCard(rec) {
+  return `<div class="rule-card">
+    <div class="rule-title"><strong>以后也这样改？</strong><small>加入纠错规则后，新的转写会自动改对</small>
+      <button class="btn ghost small" data-act="dismiss-rule">忽略</button></div>
+    ${state.ruleHint.items.map((r, k) => `<div class="rule-row">
+      <input class="rule-from" value="${esc(r.from)}" aria-label="错词"><span class="arrow">→</span>
+      <input class="rule-to" value="${esc(r.to)}" aria-label="正确词">
+      <select class="rule-scope" aria-label="修正范围">
+        ${r.total ? `<option value="all">同时修正已有的 ${r.total} 句</option>` : ''}
+        ${r.here && r.here < r.total ? `<option value="recording">只修正这条录音的 ${r.here} 句</option>` : ''}
+        <option value="future">只用于以后的转写</option></select>
+      <button class="btn small primary" data-act="add-rule" data-rule="${k}">加入规则</button></div>`).join('')}
+    ${rec.asr_provider.startsWith('funasr') ? `<label class="check"><input type="checkbox" class="rule-hotword" checked>
+      正确词同时加为热词（本地 Paraformer 更容易认对）</label>` : ''}
+  </div>`;
 }
 
 function segEditor(rec, s, draft) {
@@ -765,6 +786,7 @@ const actions = {
   },
   'edit-seg'(el) {
     state.editing = Number(el.dataset.seg);
+    state.ruleHint = null;
     renderSegments();
     const box = $('#seg-text');
     box.focus();
@@ -780,10 +802,30 @@ const actions = {
     const body = { text: $('#seg-text').value };
     const speaker = $('#seg-speaker')?.value;
     if (speaker !== undefined && speaker !== seg.speaker) body.speaker = speaker;
-    state.record = await api(`/api/recordings/${rec.id}/segments/${seg.idx}`, { method: 'PATCH', body });
+    const { rule_suggestions: rules, ...fresh } = await api(`/api/recordings/${rec.id}/segments/${seg.idx}`, { method: 'PATCH', body });
+    state.record = fresh;
+    state.ruleHint = rules?.length ? { i: state.editing, items: rules } : null;
     state.editing = null;
     renderSegments();
     toast(rec.summary ? '已保存；纪要要点“重新生成纪要”才会更新' : '已保存');
+  },
+  async 'add-rule'(el) {
+    const rec = state.record;
+    const row = el.closest('.rule-row');
+    const res = await api('/api/corrections', { method: 'POST', body: {
+      source: row.querySelector('.rule-from').value, target: row.querySelector('.rule-to').value,
+      scope: row.querySelector('.rule-scope').value, recording_id: rec.id,
+      hotword: $('.rule-hotword')?.checked ?? false,
+    } });
+    state.ruleHint.items.splice(Number(el.dataset.rule), 1);
+    if (!state.ruleHint.items.length) state.ruleHint = null;
+    if (res.changed) state.record = await api(`/api/recordings/${rec.id}`);
+    renderSegments();
+    toast(`已加入纠错规则${res.changed ? `，修正了 ${res.changed} 句` : ''}`);
+  },
+  'dismiss-rule'() {
+    state.ruleHint = null;
+    renderSegments();
   },
   'copy-summary': () => copy(state.record.summary, '纪要'),
   'copy-transcript': () => copy(transcriptText(state.record), '转写'),

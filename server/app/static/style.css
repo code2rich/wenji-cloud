@@ -369,6 +369,16 @@ mark { background: color-mix(in srgb, #ffd43b 55%, transparent); color: inherit;
 .seg-editor-tools { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .seg-editor-tools select { width: auto; height: 28px; font-size: 12.5px; }
 .seg-editor-tools .grow { flex: 1; min-width: 120px; }
+.rule-card { margin-top: 8px; padding: 10px 12px; border-radius: 10px; background: var(--accent-soft);
+  box-shadow: inset 0 0 0 1px var(--accent-ring); display: grid; gap: 8px; }
+.rule-title { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+.rule-title strong { font-size: 13px; }
+.rule-title small { color: var(--muted); font-size: 12px; flex: 1; }
+.rule-row { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.rule-row input { width: 9em; height: 28px; font-size: 13px; }
+.rule-row select { width: auto; height: 28px; font-size: 12.5px; }
+.rule-row .arrow { color: var(--muted); }
+.rule-card .check { font-size: 12.5px; color: var(--muted); }
 .avatar { width: 32px; height: 32px; border-radius: 50%; display: grid; place-items: center; color: #fff; font-size: 13px; font-weight: 650;
   flex: none; box-shadow: inset 0 0 0 1px rgba(255, 255, 255, .15); }
 .spk-0 { color: var(--spk-0); } .spk-1 { color: var(--spk-1); } .spk-2 { color: var(--spk-2); }
