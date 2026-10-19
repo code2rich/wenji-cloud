@@ -25,6 +25,9 @@ MIN_CLIP_MS = 3000       # 短于 3 秒的片段声纹不稳定
 MAX_CLIP_MS = 30000
 CLIPS_PER_SPEAKER = 3
 SAMPLES_PER_PERSON = 20  # 每人保留最近的样本数
+# 一位说话人的声纹总时长不足 10 秒时不登记、不自动命名，只给建议。实测只用一段 8 秒左右的片段登记，
+# 之后只有约六成能被认出，且有人会被别人的声纹比下去；两段以上、16 秒左右时九成五以上能认出。
+MIN_VOICE_S = 10.0
 DIRECT = urllib.request.build_opener(urllib.request.ProxyHandler({}))  # asr-worker 在内网，不走代理
 
 
@@ -119,7 +122,7 @@ def match(db: DB, rid: int, cfg: dict, people: list[dict] | None = None) -> dict
     """把录音的说话人与声纹库比对。相似度 ≥ auto 且领先明显时直接命名（只填还没命名的说话人），
     ≥ suggest 时只给建议。返回 {说话人: 匹配}。"""
     people = _people(db) if people is None else people
-    voices = db.all("SELECT speaker, embedding FROM recording_voices WHERE recording_id=?", (rid,))
+    voices = db.all("SELECT speaker, embedding, seconds FROM recording_voices WHERE recording_id=?", (rid,))
     rec = db.one("SELECT speaker_names FROM recordings WHERE id=?", (rid,))
     if not rec:
         return {}
@@ -134,14 +137,19 @@ def match(db: DB, rid: int, cfg: dict, people: list[dict] | None = None) -> dict
         gap = score - ranked[1][0] if len(ranked) > 1 else 1.0
         if score >= cfg["suggest"] and gap >= cfg["margin"]:
             found[v["speaker"]] = {"person_id": person["id"], "name": person["name"], "score": round(score, 3),
-                                   "auto": score >= cfg["auto"]}
-    # 同一个人在一条录音里只自动认领给相似度最高的那位说话人，其余降为建议。
-    best = {}
+                                   "auto": score >= cfg["auto"] and v["seconds"] >= MIN_VOICE_S}
+    # 同一个人在一条录音里只对应相似度最高的那位说话人，其余不再提示。最高的那位若没有明显领先第二位，
+    # 只给建议：声纹库只有一个人时，上面的“领先其他人”无从比较，此人不在场也可能被认到最像他的人身上。
+    by_person = {}
     for spk, m in found.items():
-        if m["auto"] and (m["person_id"] not in best or m["score"] > found[best[m["person_id"]]]["score"]):
-            best[m["person_id"]] = spk
+        by_person.setdefault(m["person_id"], []).append(spk)
+    for spks in by_person.values():
+        spks.sort(key=lambda s: found[s]["score"], reverse=True)
+        if len(spks) > 1 and found[spks[0]]["score"] - found[spks[1]]["score"] < cfg["margin"]:
+            found[spks[0]]["auto"] = False
+        for spk in spks[1:]:
+            del found[spk]
     for spk, m in found.items():
-        m["auto"] = m["auto"] and best.get(m["person_id"]) == spk
         if m["auto"] and not names.get(spk) and m["name"] not in names.values():
             names[spk] = m["name"]
     db.run("UPDATE recordings SET speaker_names=? WHERE id=?", (json.dumps(names, ensure_ascii=False), rid))
@@ -151,7 +159,7 @@ def match(db: DB, rid: int, cfg: dict, people: list[dict] | None = None) -> dict
 
 def enroll(db: DB, rid: int, names: dict[str, str], cfg: dict) -> None:
     """用户保存命名后，把这条录音里已命名说话人的声纹登记到对应的人，清空命名的则撤销登记；
-    然后用更新后的声纹库重新匹配其他录音。"""
+    声纹不足 MIN_VOICE_S 秒的不登记。然后用更新后的声纹库重新匹配其他录音。"""
     voices = {v["speaker"]: v for v in db.all("SELECT * FROM recording_voices WHERE recording_id=?", (rid,))}
     if not voices:
         return
@@ -159,7 +167,7 @@ def enroll(db: DB, rid: int, names: dict[str, str], cfg: dict) -> None:
         db.run("DELETE FROM voice_samples WHERE recording_id=?", (rid,))
         for spk, v in voices.items():
             name = names.get(spk, "").strip()
-            if not name:
+            if not name or v["seconds"] < MIN_VOICE_S:
                 continue
             person = db.one("SELECT id FROM voice_people WHERE name=?", (name,))
             pid = person["id"] if person else db.run(

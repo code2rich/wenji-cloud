@@ -409,11 +409,11 @@ def test_pick_spans_prefers_long_clean_turns():
 def test_voiceprint_enroll_auto_name_suggest_and_clear(client, tmp_path, monkeypatch):
     from app import voice
     wav = tmp_path / "long.wav"
-    subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-f", "lavfi", "-i", "sine=frequency=300:duration=12",
+    subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-f", "lavfi", "-i", "sine=frequency=300:duration=26",
                     "-ar", "16000", "-ac", "1", str(wav)], check=True)
     data = wav.read_bytes()
-    turns = [{"start_ms": 0, "end_ms": 5000, "speaker": "0", "text": "第一位说话人在讲预算"},
-             {"start_ms": 5500, "end_ms": 11000, "speaker": "1", "text": "第二位说话人在讲排期"}]
+    turns = [{"start_ms": 0, "end_ms": 12000, "speaker": "0", "text": "第一位说话人在讲预算"},
+             {"start_ms": 13000, "end_ms": 25000, "speaker": "1", "text": "第二位说话人在讲排期"}]
     monkeypatch.setattr(asr, "funasr", lambda *a: turns)
     wang, li, other = _unit((0, 1)), _unit((1, 1)), _unit((2, 1))
     current = {}
@@ -468,6 +468,49 @@ def test_voiceprint_enroll_auto_name_suggest_and_clear(client, tmp_path, monkeyp
     # 6. 一键清空
     client.delete("/api/voices", headers=AUTH)
     assert client.get("/api/voices", headers=AUTH).json()["people"] == [] and get(r1)["voices"] == {}
+
+
+def _voice_rec(db, rid, voices):
+    """直接写入一条录音和它的声纹：voices = {说话人: (向量, 秒数)}。"""
+    from app.db import now
+    db.run("INSERT INTO recordings(id, name, size, title, audio_path, sha256, status, created_at, updated_at) "
+           "VALUES(?,?,?,?,?,?,?,?,?)", (rid, f"v{rid}", rid, f"v{rid}", "", "", "done", now(), now()))
+    for spk, (vector, seconds) in voices.items():
+        db.run("INSERT INTO recording_voices VALUES(?,?,?,?)", (rid, spk, json.dumps(vector), seconds))
+
+
+def test_voiceprint_little_data_not_enrolled_and_not_auto(client):
+    from app import voice
+    cfg = {"auto": 0.75, "suggest": 0.6, "margin": 0.08}
+    wang = _unit((0, 1))
+    # 只有 4 秒声纹：命名后不登记
+    _voice_rec(client.db, 901, {"0": (wang, 4.0)})
+    voice.enroll(client.db, 901, {"0": "王总"}, cfg)
+    assert voice.library(client.db) == []
+    # 声纹充足时登记；另一条录音里同一个人只说了 4 秒，只给建议不自动命名
+    _voice_rec(client.db, 902, {"0": (wang, 25.0)})
+    _voice_rec(client.db, 903, {"0": (_unit((0, 1), (4, 0.1)), 4.0)})
+    voice.enroll(client.db, 902, {"0": "王总"}, cfg)
+    m = voice.match(client.db, 903, cfg)
+    assert m["0"]["name"] == "王总" and not m["0"]["auto"]
+    assert json.loads(client.db.one("SELECT speaker_names FROM recordings WHERE id=903")["speaker_names"]) == {}
+
+
+def test_voiceprint_one_person_library_needs_clear_lead(client):
+    """声纹库只有一个人时，没法和“第二像的人”比，靠同一录音里的其他说话人做对照。"""
+    from app import voice
+    cfg = {"auto": 0.75, "suggest": 0.6, "margin": 0.08}
+    _voice_rec(client.db, 911, {"0": (_unit((0, 1)), 25.0)})
+    voice.enroll(client.db, 911, {"0": "王总"}, cfg)
+    # 王总不在场：两位陌生人都和他有几分像（0.80 / 0.78），不能把名字自动给其中一位，也不重复提示
+    _voice_rec(client.db, 912, {"0": (_unit((0, 0.8), (1, 0.6)), 20.0), "1": (_unit((0, 0.78), (2, 0.626)), 20.0)})
+    m = voice.match(client.db, 912, cfg)
+    assert list(m) == ["0"] and not m["0"]["auto"]
+    # 王总在场且明显领先其他人：自动命名
+    _voice_rec(client.db, 913, {"0": (_unit((0, 0.95), (1, 0.31)), 20.0), "1": (_unit((0, 0.78), (2, 0.626)), 20.0)})
+    m = voice.match(client.db, 913, cfg)
+    assert list(m) == ["0"] and m["0"]["auto"]
+    assert json.loads(client.db.one("SELECT speaker_names FROM recordings WHERE id=913")["speaker_names"]) == {"0": "王总"}
 
 
 def test_voice_settings_validation(client):

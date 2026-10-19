@@ -504,12 +504,17 @@ function voiceBanner(rec) {
   return '';
 }
 
+const VOICE_MIN_S = 10; // 与 voice.py 的 MIN_VOICE_S 一致：不足的声纹不登记、不自动命名
+
 // 每位说话人的声纹状态：已自动识别 / 建议 / 片段不足。
 function voiceTag(rec, spk) {
   const voices = rec.voices || {};
   if (!Object.keys(voices).length) return '';
   if (!(spk in voices)) return '<span class="vtag muted" title="没有 3 秒以上、不与他人重叠的单人片段">声纹片段不足</span>';
   const m = rec.voice_matches?.speakers?.[spk];
+  if (!m && voices[spk] < VOICE_MIN_S) {
+    return `<span class="vtag muted" title="可用的单人片段只有约 ${Math.round(voices[spk])} 秒，不足 ${VOICE_MIN_S} 秒，命名后不会登记到声纹库">声纹太少，不登记</span>`;
+  }
   if (!m) return '<span class="vtag muted">声纹库中没有匹配的人</span>';
   const pct = `${Math.round(m.score * 100)}%`;
   if (rec.speaker_names[spk] === m.name) {

@@ -149,6 +149,8 @@ async def embed(request: Request):
         async for chunk in request.stream():
             tmp.write(chunk)
         tmp.flush()
+        if tmp.tell() == 0:
+            raise HTTPException(400, "请求体为空")
         try:
             vector = await run_in_threadpool(_embed, tmp.name)
         except (ValueError, wave.Error, EOFError) as e:
